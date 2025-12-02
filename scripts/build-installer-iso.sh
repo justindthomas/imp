@@ -106,6 +106,16 @@ dkms
 # Bootstrapping
 debootstrap
 mmdebstrap
+
+# Compression and console (needed for initramfs)
+zstd
+console-setup
+
+# Live system essentials
+live-boot
+live-config
+live-config-systemd
+sudo
 EOF
 
 # =============================================================================
@@ -176,6 +186,37 @@ EOF
 # =============================================================================
 mkdir -p config/includes.chroot/etc/modules-load.d
 echo "zfs" > config/includes.chroot/etc/modules-load.d/zfs.conf
+
+# =============================================================================
+# Configure live user
+# =============================================================================
+log "Configuring live user..."
+
+# Hook to set up the live user with a known password and sudo access
+cat > config/hooks/normal/0200-setup-live-user.hook.chroot << 'EOF'
+#!/bin/bash
+set -e
+
+# Create user account if it doesn't exist
+if ! id -u user &>/dev/null; then
+    useradd -m -s /bin/bash -G sudo,cdrom,floppy,audio,dip,video,plugdev,netdev user
+fi
+
+# Set password for user account (password: live)
+echo "user:live" | chpasswd
+
+# Ensure user has sudo access without password
+mkdir -p /etc/sudoers.d
+echo "user ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/live-user
+chmod 440 /etc/sudoers.d/live-user
+
+# Also set root password (password: root)
+echo "root:root" | chpasswd
+
+# Enable root login on console
+sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config 2>/dev/null || true
+EOF
+chmod +x config/hooks/normal/0200-setup-live-user.hook.chroot
 
 # =============================================================================
 # Build the ISO
