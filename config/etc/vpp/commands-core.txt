@@ -1,0 +1,35 @@
+lcp lcp-sync on
+lcp lcp-auto-subint on
+
+lcp create external host-if external
+set interface state external up
+set interface ip address external 23.177.24.9/31
+set interface ip address external 2602:f90e::101/127
+set interface mtu 1500 external
+
+lcp create internal host-if internal
+set interface state internal up
+set interface ip address internal 192.168.20.1/24
+set interface ip address internal 2602:f90e:10::ffff:ffff:ffff:fffe/64
+set interface mtu 1500 internal
+
+create memif socket id 1 filename /run/vpp/memif-nat-int.sock
+create interface memif id 0 socket-id 1 master
+set interface state memif1/0 up
+set interface ip address memif1/0 169.254.1.4/31
+
+create memif socket id 2 filename /run/vpp/memif-nat-ext.sock
+create interface memif id 0 socket-id 2 master
+lcp create memif2/0 host-if memif2
+set interface state memif2/0 up
+set interface ip address memif2/0 169.254.1.7/31
+
+set acl-plugin acl deny src 192.168.20.0/24 dst 10.234.116.0/24, deny src 192.168.20.0/24 dst 192.168.37.0/24, deny src 192.168.20.0/24 dst 10.42.0.0/16, deny src 192.168.20.0/24 dst 10.11.0.0/16, permit src 192.168.20.0/24
+abf policy add id 0 acl 0 via 169.254.1.5 memif1/0
+abf attach ip4 policy 0 internal
+
+ip route add 0.0.0.0/0 via 23.177.24.8 external
+ip route add ::/0 via 2602:f90e::100 external
+
+ip route add 23.177.24.96/29 via 169.254.1.6 memif2/0
+

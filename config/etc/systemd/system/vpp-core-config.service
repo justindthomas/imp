@@ -1,0 +1,11 @@
+[Unit]
+Description=VPP Core Post-Start Configuration
+After=vpp-core.service
+Requires=vpp-core.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vpp-core-config.sh
+
+[Install]
+WantedBy=multi-user.target

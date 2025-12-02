@@ -10,8 +10,10 @@ The IMP build system creates bootable Debian images that can be deployed as ZFS 
 
 - **Boot Environment Management**: zfsbootmenu provides boot selection and rollback
 - **Image Format**: ZFS send streams compressed with zstd
-- **Target Platform**: Debian Trixie (testing) on x86_64
-- **Container Runtime**: Incus (planned)
+- **Target Platform**: Debian Bookworm on x86_64 (Bookworm required for fd.io VPP packages)
+- **Dataplane**: VPP (Vector Packet Processing) with DPDK
+- **Routing**: FRR (Free Range Routing) in dedicated network namespace
+- **Container Runtime**: Incus (from bookworm-backports)
 
 ## Part 1: Appliance Setup
 
@@ -20,18 +22,80 @@ These steps create the initial appliance with ZFS root and zfsbootmenu.
 ### Prerequisites
 
 - UEFI-capable system (physical or VM)
-- Boot media: Debian Live ISO (Trixie)
+- Boot media: IMP Installer ISO (recommended) or Debian Live ISO (Bookworm)
 - Target disk: 40GB+ recommended
 
-### Boot Live Environment and Install ZFS
+### Option A: IMP Installer ISO (Recommended)
+
+Use the pre-built IMP Installer ISO which includes ZFS modules already compiled (saves 30-45 minutes):
+
+```bash
+# Write ISO to USB
+sudo dd if=imp-installer-YYYYMMDD.iso of=/dev/sdX bs=4M status=progress
+
+# Boot from USB, then simply run:
+setup-appliance.sh /dev/sda
+```
+
+To build the installer ISO yourself (requires a Debian Bookworm system):
+
+```bash
+apt install live-build
+./scripts/build-installer-iso.sh /var/lib/images
+# Output: /var/lib/images/imp-installer-YYYYMMDD.iso
+```
+
+### Option B: Stock Debian Live ISO
+
+If using the stock Debian Live ISO, you'll need to compile ZFS modules first (30-45 minutes).
+
+Two scripts automate the process - first bootstrap ZFS on the Live CD, then run the appliance setup:
+
+```bash
+sudo -i
+
+# Step 1: Bootstrap ZFS on the Live CD
+curl -sL https://raw.githubusercontent.com/your-org/imp-build/main/scripts/bootstrap-livecd.sh | bash
+
+# Step 2: Run appliance setup
+curl -LO https://raw.githubusercontent.com/your-org/imp-build/main/scripts/setup-appliance.sh
+chmod +x setup-appliance.sh
+./setup-appliance.sh /dev/sda
+```
+
+Or clone the repo:
+
+```bash
+sudo -i
+apt update && apt install -y git curl
+
+git clone https://github.com/your-org/imp-build.git
+cd imp-build
+./scripts/bootstrap-livecd.sh
+./scripts/setup-appliance.sh /dev/sda
+```
+
+The script will:
+1. Partition the disk (BIOS boot, ESP, ZFS)
+2. Create ZFS pool with boot environments and persistent datasets
+3. Bootstrap Debian Bookworm
+4. Install zfsbootmenu
+5. Configure the system for first boot
+
+### Manual Setup
+
+If you prefer to run steps manually, see below.
+
+#### Boot Live Environment and Install ZFS
 
 ```bash
 sudo -i
 
 # Add contrib repository for ZFS
 cat > /etc/apt/sources.list << 'EOF'
-deb http://deb.debian.org/debian trixie main contrib
-deb http://deb.debian.org/debian trixie-updates main contrib
+deb http://deb.debian.org/debian bookworm main contrib
+deb http://deb.debian.org/debian bookworm-updates main contrib
+deb http://deb.debian.org/debian bookworm-backports main contrib
 EOF
 
 apt update
@@ -99,7 +163,7 @@ zfs mount tank/ROOT/debian-initial
 ROOTFS=/mnt/root
 
 debootstrap --include=linux-image-amd64,linux-headers-amd64,systemd,systemd-sysv,dbus,locales,keyboard-configuration \
-    trixie "$ROOTFS" https://deb.debian.org/debian
+    bookworm "$ROOTFS" https://deb.debian.org/debian
 ```
 
 ### Configure the System
@@ -128,11 +192,12 @@ echo "127.0.1.1 appliance" >> /etc/hosts
 # Set root password
 passwd
 
-# Configure apt with contrib
+# Configure apt with contrib and backports
 cat > /etc/apt/sources.list << 'EOF'
-deb http://deb.debian.org/debian trixie main contrib
-deb http://deb.debian.org/debian trixie-updates main contrib
-deb http://security.debian.org/debian-security trixie-security main contrib
+deb http://deb.debian.org/debian bookworm main contrib
+deb http://deb.debian.org/debian bookworm-updates main contrib
+deb http://deb.debian.org/debian bookworm-backports main contrib
+deb http://security.debian.org/debian-security bookworm-security main contrib
 EOF
 
 apt update
@@ -207,9 +272,31 @@ Remove the live ISO and reboot. zfsbootmenu should present your boot environment
 
 ## Part 2: Build VM Setup
 
-A separate VM for building images keeps the build environment isolated.
+A separate VM for building images keeps the build environment isolated. The build VM should run Debian Bookworm.
 
-### Create Build Pool
+### Automated Setup
+
+The `setup-build-vm.sh` script automates build VM initialization:
+
+```bash
+sudo -i
+
+# Clone the repo or download the scripts
+git clone https://github.com/your-org/imp-build.git
+cd imp-build
+
+# Run setup (default 10G pool, or specify size)
+./scripts/setup-build-vm.sh 20G
+```
+
+The script will:
+1. Install ZFS and build dependencies
+2. Create a file-backed ZFS pool
+3. Install the build script to `/usr/local/bin/`
+
+### Manual Setup
+
+If you prefer to run steps manually:
 
 ```bash
 # File-backed pool for builds
@@ -219,7 +306,7 @@ zpool create buildpool /var/lib/build-pool.img
 zfs create buildpool/workspace
 
 # Install build tools
-apt install -y mmdebstrap squashfs-tools zstd
+apt install -y mmdebstrap squashfs-tools zstd curl gnupg zfsutils-linux
 ```
 
 **Note**: The file-backed pool won't auto-import on reboot. Re-import with:
@@ -230,15 +317,22 @@ zpool import -d /var/lib buildpool
 
 ### Build Script
 
-See `scripts/build-image.sh` for the image build script.
+See `scripts/build-image.sh` for the image build script. The script builds images with:
+
+- Debian Bookworm base system
+- ZFS root filesystem support
+- VPP (from fd.io repository)
+- FRR (Free Range Routing)
+- Incus (from bookworm-backports)
+- Dataplane namespace configuration
 
 Usage:
 
 ```bash
-build-image.sh debian-v1.0.0
+./scripts/build-image.sh imp-v1.0.0
 ```
 
-This produces `/var/lib/images/debian-v1.0.0.zfs.zst`.
+This produces `/var/lib/images/imp-v1.0.0.zfs.zst`.
 
 **Note**: Initial builds take 30+ minutes due to ZFS DKMS compilation in the chroot.
 
@@ -249,7 +343,7 @@ This produces `/var/lib/images/debian-v1.0.0.zfs.zst`.
 Use scp, shared storage, or any preferred method:
 
 ```bash
-scp /var/lib/images/debian-v1.0.0.zfs.zst root@appliance:/tmp/
+scp /var/lib/images/imp-v1.0.0.zfs.zst root@appliance:/tmp/
 ```
 
 ### Receive and Activate
@@ -258,16 +352,53 @@ On the appliance:
 
 ```bash
 # Receive the image as a new boot environment
-zstd -d < /tmp/debian-v1.0.0.zfs.zst | zfs receive tank/ROOT/debian-v1.0.0
+zstd -d < /tmp/imp-v1.0.0.zfs.zst | zfs receive tank/ROOT/imp-v1.0.0
 
 # Set mountpoint for booting
-zfs set mountpoint=/ tank/ROOT/debian-v1.0.0
+zfs set mountpoint=/ tank/ROOT/imp-v1.0.0
 
 # Activate as default boot environment
-zpool set bootfs=tank/ROOT/debian-v1.0.0 tank
+zpool set bootfs=tank/ROOT/imp-v1.0.0 tank
 
 # Reboot into new image
 reboot
+```
+
+### Post-Deployment Configuration
+
+After first boot, the following machine-specific configuration may be needed:
+
+**1. VPP Configuration** (`/etc/vpp/`):
+- `startup-core.conf`: Update PCI device addresses in the `dpdk` section
+- `commands-core.txt`: Update IP addresses, prefixes, and ACLs
+- `commands-nat.txt`: Update NAT pool mappings
+
+**2. Interface Names** (`/etc/systemd/system/netns-move-interfaces.service`):
+- Update interface names for your hardware (e.g., `enp4s0f0np0`)
+
+**3. FRR Configuration** (`/etc/frr/frr.conf`):
+- Update BGP router-id and peer addresses
+- Update announced prefixes
+
+**4. Initialize Incus** (first boot only):
+```bash
+# Interactive setup
+incus-init.sh
+
+# Or non-interactive with defaults
+incus-init.sh --non-interactive
+```
+
+This script:
+- Initializes Incus with a default storage pool
+- Creates incusbr0 bridge with 10.234.116.0/24
+- Disables Incus NAT (VPP handles NAT)
+- Sets gateway to VPP's host-interface (10.234.116.5)
+- Configures DHCP range for containers
+
+After making configuration changes, restart services:
+```bash
+systemctl restart vpp-core vpp-nat frr
 ```
 
 ### Rollback
@@ -275,7 +406,7 @@ reboot
 To switch to a previous boot environment:
 
 ```bash
-zpool set bootfs=tank/ROOT/debian-initial tank
+zpool set bootfs=tank/ROOT/imp-v0.9.0 tank
 reboot
 ```
 
@@ -303,6 +434,64 @@ At the zfsbootmenu screen:
 - `s` — Create snapshot
 - `Escape` — Back/cancel
 - `Ctrl+H` — Help
+
+## Part 4: Verifying the Dataplane
+
+After deploying an image and rebooting, verify the dataplane is operational:
+
+### Check Service Status
+
+```bash
+# All dataplane services should be active
+systemctl status netns-dataplane
+systemctl status vpp-core
+systemctl status vpp-nat
+systemctl status frr
+```
+
+### Verify Namespace
+
+```bash
+# Should show "dataplane"
+ip netns list
+
+# Check interfaces in dataplane namespace
+ip netns exec dataplane ip link
+```
+
+### Verify VPP
+
+```bash
+# Connect to VPP CLI
+vppctl -s /run/vpp/core-cli.sock
+
+# Inside vppctl:
+show version
+show interface
+show interface address
+show ip fib
+```
+
+### Verify FRR
+
+```bash
+# Run vtysh in the dataplane namespace
+ip netns exec dataplane vtysh
+
+# Inside vtysh:
+show ip bgp summary
+show ip route
+```
+
+### Verify NAT
+
+```bash
+# Connect to NAT instance
+vppctl -s /run/vpp/nat-cli.sock
+
+# Inside vppctl:
+show det44 sessions
+```
 
 ## Troubleshooting
 
@@ -335,4 +524,40 @@ zpool import -d /var/lib buildpool
 apt install -y linux-headers-amd64 zfs-dkms
 dkms autoinstall
 modprobe zfs
+```
+
+### VPP fails to start
+
+Check logs:
+```bash
+journalctl -u vpp-core
+cat /var/log/vpp/core.log
+```
+
+Common issues:
+- **DPDK can't bind to NIC**: Check PCI addresses in `startup-core.conf`
+- **Permission denied on socket**: Ensure `/run/vpp/` directory exists
+- **Interface not found**: Ensure `netns-move-interfaces` ran before VPP
+
+### FRR not establishing BGP sessions
+
+```bash
+# Check FRR is running in correct namespace
+ip netns exec dataplane pgrep -a bgpd
+
+# Check connectivity to peer
+ip netns exec dataplane ping <peer-address>
+
+# Check VPP created TAP interfaces
+vppctl -s /run/vpp/core-cli.sock show lcp
+```
+
+### Dataplane namespace not created
+
+```bash
+# Check service status
+systemctl status netns-dataplane
+
+# Manually create if needed (for debugging)
+ip netns add dataplane
 ```

@@ -1,0 +1,18 @@
+create memif socket id 1 filename /run/vpp/memif-nat-int.sock
+create interface memif id 0 socket-id 1 slave
+set interface state memif1/0 up
+set interface ip address memif1/0 169.254.1.5/31
+
+create memif socket id 2 filename /run/vpp/memif-nat-ext.sock
+create interface memif id 0 socket-id 2 slave 
+set interface state memif2/0 up
+set interface ip address memif2/0 169.254.1.6/31
+
+det44 plugin enable
+set interface det44 inside memif1/0 outside memif2/0
+det44 add in 192.168.20.0/24 out 23.177.24.96/30
+det44 add in 10.234.116.0/24 out 23.177.24.100/30
+
+ip route add 0.0.0.0/0 via 169.254.1.7 memif2/0
+ip route add 192.168.20.0/24 via 169.254.1.4 memif1/0
+ip route add 10.234.116.0/24 via 169.254.1.4 memif1/0

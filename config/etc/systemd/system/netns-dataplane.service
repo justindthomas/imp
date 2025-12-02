@@ -1,0 +1,28 @@
+[Unit]
+Description=Dataplane network namespace
+#After=local-fs.target
+#Wants=network-online.target
+#After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+PrivateNetwork=yes
+
+# To set name for this namespace, we create a second namespace
+# with required name, unmount it, and then bind our PrivateNetwork
+# namespace to it. After this we can use our PrivateNetwork as a named
+# namespace in commands.
+ExecStartPre=/usr/bin/echo "Creating dataplane network namespace"
+ExecStartPre=-/usr/bin/rm -f /var/run/netns/dataplane
+ExecStartPre=-/usr/sbin/ip netns delete dataplane
+ExecStart=/usr/bin/mkdir -p /etc/netns/dataplane
+ExecStart=/usr/bin/touch /etc/netns/dataplane/resolv.conf
+ExecStart=/usr/sbin/ip netns add dataplane
+ExecStart=-/usr/bin/umount /var/run/netns/dataplane
+ExecStart=/usr/bin/mount --bind /proc/self/ns/net /var/run/netns/dataplane
+ExecStart=/usr/sbin/ip netns exec dataplane /usr/lib/systemd/systemd-sysctl
+ExecStop=/usr/sbin/ip netns delete dataplane
+
+[Install]
+WantedBy=multi-user.target

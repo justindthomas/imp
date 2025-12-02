@@ -7,6 +7,13 @@
 #
 # Output: /var/lib/images/<version>.zfs.zst
 #
+# This script builds a Debian Bookworm image with:
+#   - ZFS root filesystem support
+#   - VPP (Vector Packet Processing) from fd.io
+#   - FRR (Free Range Routing)
+#   - Incus container runtime (from backports)
+#   - Dataplane namespace isolation
+#
 
 set -euo pipefail
 
@@ -14,6 +21,8 @@ VERSION="${1:?Usage: build-image.sh <version>}"
 DATASET="buildpool/workspace/${VERSION}"
 SNAPSHOT="${DATASET}@release"
 OUTPUT_DIR="/var/lib/images"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_DIR="${SCRIPT_DIR}/../config"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -24,14 +33,16 @@ zfs create "$DATASET"
 MOUNTPOINT=$(zfs get -H -o value mountpoint "$DATASET")
 echo "Building in: $MOUNTPOINT"
 
-# Bootstrap minimal Debian with contrib for ZFS
+# Bootstrap minimal Debian Bookworm
+# Using bookworm because fd.io doesn't have trixie packages yet
 mmdebstrap \
     --variant=minbase \
     --components=main,contrib \
-    --include=systemd,systemd-sysv,dbus,linux-image-amd64,linux-headers-amd64,zfsutils-linux,zfs-initramfs,openssh-server,systemd-resolved,iproute2,dhcpcd-base,locales,console-setup,zstd \
-    trixie \
+    --include=systemd,systemd-sysv,dbus,linux-image-amd64,linux-headers-amd64,zfsutils-linux,zfs-initramfs,openssh-server,systemd-resolved,iproute2,dhcpcd-base,locales,console-setup,zstd,curl,gnupg \
+    bookworm \
     "$MOUNTPOINT" \
-    "deb http://deb.debian.org/debian trixie main contrib"
+    "deb http://deb.debian.org/debian bookworm main contrib" \
+    "deb http://deb.debian.org/debian bookworm-backports main contrib"
 
 # Basic configuration
 echo "appliance" > "${MOUNTPOINT}/etc/hostname"
@@ -42,7 +53,8 @@ sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' "${MOUNTPOINT}/etc/locale.gen"
 chroot "$MOUNTPOINT" locale-gen
 echo 'LANG=en_US.UTF-8' > "${MOUNTPOINT}/etc/default/locale"
 
-# Network config (DHCP on all ethernet)
+# Network config (DHCP on management interface only)
+# Dataplane interfaces are managed by VPP
 mkdir -p "${MOUNTPOINT}/etc/systemd/network"
 cat > "${MOUNTPOINT}/etc/systemd/network/20-wired.network" << 'EOF'
 [Match]
@@ -52,11 +64,95 @@ Name=en*
 DHCP=yes
 EOF
 
-# Enable services
-chroot "$MOUNTPOINT" systemctl enable systemd-networkd systemd-resolved ssh
-
 # Set root password (change this!)
 echo "root:appliance" | chroot "$MOUNTPOINT" chpasswd
+
+# =============================================================================
+# fd.io VPP Repository Setup
+# =============================================================================
+echo "Adding fd.io repository..."
+mkdir -p "${MOUNTPOINT}/etc/apt/keyrings"
+curl -fsSL https://packagecloud.io/fdio/release/gpgkey | \
+    gpg --dearmor -o "${MOUNTPOINT}/etc/apt/keyrings/fdio_release-archive-keyring.gpg"
+
+# Copy fd.io sources list from config
+cp "${CONFIG_DIR}/etc/apt/sources.list.d/fdio_release.list" \
+   "${MOUNTPOINT}/etc/apt/sources.list.d/"
+
+# Update package lists with new repos
+chroot "$MOUNTPOINT" apt-get update
+
+# =============================================================================
+# Install VPP packages
+# =============================================================================
+echo "Installing VPP..."
+chroot "$MOUNTPOINT" apt-get install -y \
+    vpp \
+    vpp-plugin-core \
+    vpp-plugin-dpdk
+
+# =============================================================================
+# Install FRR (Free Range Routing)
+# =============================================================================
+echo "Installing FRR..."
+chroot "$MOUNTPOINT" apt-get install -y frr frr-pythontools
+
+# =============================================================================
+# Install Incus from backports
+# =============================================================================
+echo "Installing Incus from backports..."
+chroot "$MOUNTPOINT" apt-get install -y -t bookworm-backports incus
+
+# =============================================================================
+# Copy configuration files
+# =============================================================================
+echo "Copying configuration files..."
+
+# VPP configuration
+mkdir -p "${MOUNTPOINT}/etc/vpp"
+cp "${CONFIG_DIR}/etc/vpp/"* "${MOUNTPOINT}/etc/vpp/"
+mkdir -p "${MOUNTPOINT}/var/log/vpp"
+
+# FRR configuration
+cp "${CONFIG_DIR}/etc/frr/daemons" "${MOUNTPOINT}/etc/frr/"
+cp "${CONFIG_DIR}/etc/frr/frr.conf" "${MOUNTPOINT}/etc/frr/"
+cp "${CONFIG_DIR}/etc/frr/vtysh.conf" "${MOUNTPOINT}/etc/frr/"
+chroot "$MOUNTPOINT" chown -R frr:frr /etc/frr
+chroot "$MOUNTPOINT" chmod 640 /etc/frr/frr.conf
+
+# Systemd service units for dataplane
+cp "${CONFIG_DIR}/etc/systemd/system/"*.service "${MOUNTPOINT}/etc/systemd/system/"
+
+# Helper scripts
+mkdir -p "${MOUNTPOINT}/usr/local/bin"
+cp "${CONFIG_DIR}/usr/local/bin/"* "${MOUNTPOINT}/usr/local/bin/"
+chmod +x "${MOUNTPOINT}/usr/local/bin/"*
+
+# Create netns directory for dataplane namespace config
+mkdir -p "${MOUNTPOINT}/etc/netns/dataplane"
+
+# =============================================================================
+# Enable services
+# =============================================================================
+echo "Enabling services..."
+chroot "$MOUNTPOINT" systemctl enable \
+    systemd-networkd \
+    systemd-resolved \
+    ssh \
+    netns-dataplane \
+    netns-move-interfaces \
+    vpp-core \
+    vpp-core-config \
+    vpp-nat \
+    frr
+
+# Note: incus-dataplane is enabled but depends on incus.service
+# Incus itself needs initialization after first boot
+chroot "$MOUNTPOINT" systemctl enable incus-dataplane
+
+# =============================================================================
+# Finalize
+# =============================================================================
 
 # Regenerate initramfs with ZFS
 chroot "$MOUNTPOINT" update-initramfs -u -k all

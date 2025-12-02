@@ -1,0 +1,10 @@
+#!/bin/bash
+IFACE="$1"
+for i in {1..30}; do
+    if ip link show "$IFACE" | grep -q "state"; then
+        exit 0
+    fi
+    sleep 1
+done
+echo "Interface $IFACE not up after 30 seconds"
+exit 1
