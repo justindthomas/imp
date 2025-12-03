@@ -8,8 +8,10 @@ Type=oneshot
 RemainAfterExit=yes
 
 ExecStartPre=/usr/bin/echo "Moving interfaces to dataplane"
-ExecStart=/usr/sbin/ip link set ${EXTERNAL_IFACE} netns dataplane
-{{INTERNAL_IFACE_MOVES}}
+ExecStart=/usr/sbin/ip link set {{ external.iface }} netns dataplane
+{% for iface in internal %}
+ExecStart=/usr/sbin/ip link set {{ iface.iface }} netns dataplane
+{% endfor %}
 
 [Install]
 WantedBy=multi-user.target

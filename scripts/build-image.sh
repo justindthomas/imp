@@ -104,6 +104,12 @@ echo "Installing Incus from backports..."
 chroot "$MOUNTPOINT" apt-get install -y -t bookworm-backports incus
 
 # =============================================================================
+# Install Python/Jinja2 for configuration script
+# =============================================================================
+echo "Installing Python/Jinja2..."
+chroot "$MOUNTPOINT" apt-get install -y python3 python3-jinja2
+
+# =============================================================================
 # Copy configuration templates and scripts
 # =============================================================================
 echo "Copying configuration templates and scripts..."
@@ -137,9 +143,9 @@ chmod +x "${MOUNTPOINT}/usr/local/bin/"*
 mkdir -p "${MOUNTPOINT}/etc/netns/dataplane"
 
 # =============================================================================
-# Copy configuration templates for configure-router.sh
+# Copy configuration templates for configure-router.py
 # =============================================================================
-echo "Copying configuration templates..."
+echo "Copying Jinja2 templates..."
 
 # Templates directory
 mkdir -p "${MOUNTPOINT}/etc/imp/templates/vpp"
@@ -147,19 +153,20 @@ mkdir -p "${MOUNTPOINT}/etc/imp/templates/frr"
 mkdir -p "${MOUNTPOINT}/etc/imp/templates/systemd"
 mkdir -p "${MOUNTPOINT}/etc/imp/templates/scripts"
 
-cp "${CONFIG_DIR}/templates/vpp/"*.tmpl "${MOUNTPOINT}/etc/imp/templates/vpp/"
-cp "${CONFIG_DIR}/templates/frr/"*.tmpl "${MOUNTPOINT}/etc/imp/templates/frr/"
-cp "${CONFIG_DIR}/templates/systemd/"*.tmpl "${MOUNTPOINT}/etc/imp/templates/systemd/"
-cp "${CONFIG_DIR}/templates/scripts/"*.tmpl "${MOUNTPOINT}/etc/imp/templates/scripts/"
+cp "${CONFIG_DIR}/templates/vpp/"*.j2 "${MOUNTPOINT}/etc/imp/templates/vpp/"
+cp "${CONFIG_DIR}/templates/frr/"*.j2 "${MOUNTPOINT}/etc/imp/templates/frr/"
+cp "${CONFIG_DIR}/templates/systemd/"*.j2 "${MOUNTPOINT}/etc/imp/templates/systemd/"
+cp "${CONFIG_DIR}/templates/scripts/"*.j2 "${MOUNTPOINT}/etc/imp/templates/scripts/"
 
-# Router configuration script and library
-mkdir -p "${MOUNTPOINT}/usr/local/lib/imp"
-cp "${SCRIPT_DIR}/configure-router.sh" "${MOUNTPOINT}/usr/local/bin/"
-cp "${SCRIPT_DIR}/lib/router-config-lib.sh" "${MOUNTPOINT}/usr/local/lib/imp/"
-chmod +x "${MOUNTPOINT}/usr/local/bin/configure-router.sh"
+# Router configuration script (Python)
+cp "${SCRIPT_DIR}/configure-router.py" "${MOUNTPOINT}/usr/local/bin/"
+chmod +x "${MOUNTPOINT}/usr/local/bin/configure-router.py"
+
+# Create symlink for convenience
+ln -sf configure-router.py "${MOUNTPOINT}/usr/local/bin/configure-router"
 
 # =============================================================================
-# Copy default configs (will be overwritten by configure-router.sh)
+# Copy default configs (will be overwritten by configure-router.py)
 # These provide a bootable system before configuration
 # =============================================================================
 echo "Copying default configuration files..."

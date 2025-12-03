@@ -1,0 +1,10 @@
+[Match]
+Name={{ management.iface }}
+
+[Network]
+{% if management.mode == "dhcp" %}
+DHCP=yes
+{% else %}
+Address={{ management.ipv4 }}/{{ management.ipv4_prefix }}
+Gateway={{ management.ipv4_gateway }}
+{% endif %}

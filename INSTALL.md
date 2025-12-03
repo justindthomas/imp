@@ -370,7 +370,10 @@ After deploying an image and rebooting, run the interactive configuration script
 
 ```bash
 # Interactive configuration
-configure-router.sh
+configure-router.py
+
+# Or use the symlink
+configure-router
 ```
 
 The script will guide you through:
@@ -382,14 +385,14 @@ The script will guide you through:
 5. **BGP Configuration** — Optionally configure BGP peering
 6. **NAT Configuration** — Set NAT pool and internal networks to NAT
 
-Configuration is saved to `/persistent/config/router.conf` and survives image upgrades.
+Configuration is saved to `/persistent/config/router.json` and survives image upgrades.
 
 #### Re-applying Configuration
 
 After deploying a new image, re-apply existing configuration:
 
 ```bash
-configure-router.sh --apply-only
+configure-router.py --apply-only
 ```
 
 #### Initialize Incus

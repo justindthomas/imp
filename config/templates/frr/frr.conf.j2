@@ -1,0 +1,65 @@
+frr version 8.4.4
+frr defaults traditional
+hostname {{ hostname }}
+log syslog informational
+service integrated-vtysh-config
+!
+# Blackhole routes for announced prefixes
+{% for network in nat.internal_networks %}
+ip route {{ network }} blackhole
+{% endfor %}
+ip route {{ nat.pool }} 169.254.1.6 memif2
+{% for iface in internal %}
+{% if iface.ipv6 %}
+ipv6 route {{ iface.ipv6_network }} blackhole
+{% endif %}
+{% endfor %}
+!
+{% if bgp.enabled %}
+router bgp {{ bgp.asn }}
+ bgp router-id {{ bgp.router_id }}
+ no bgp default ipv4-unicast
+{% if bgp.peer_ipv4 %}
+ neighbor {{ bgp.peer_ipv4 }} remote-as {{ bgp.peer_asn }}
+ neighbor {{ bgp.peer_ipv4 }} description upstream
+ neighbor {{ bgp.peer_ipv4 }} update-source {{ external.ipv4 }}
+{% endif %}
+{% if bgp.peer_ipv6 %}
+ neighbor {{ bgp.peer_ipv6 }} remote-as {{ bgp.peer_asn }}
+ neighbor {{ bgp.peer_ipv6 }} description upstream-v6
+ neighbor {{ bgp.peer_ipv6 }} update-source {{ external.ipv6 }}
+{% endif %}
+ !
+ address-family ipv4 unicast
+{% for network in nat.internal_networks %}
+  network {{ network }}
+{% endfor %}
+  network {{ nat.pool }}
+  redistribute connected route-map ALLOW_OUT
+{% if bgp.peer_ipv4 %}
+  neighbor {{ bgp.peer_ipv4 }} activate
+  neighbor {{ bgp.peer_ipv4 }} soft-reconfiguration inbound
+{% endif %}
+ exit-address-family
+{% if bgp.peer_ipv6 %}
+ !
+ address-family ipv6 unicast
+{% for iface in internal %}
+{% if iface.ipv6 %}
+  network {{ iface.ipv6_network }}
+{% endif %}
+{% endfor %}
+  redistribute connected route-map ALLOW_OUT
+  neighbor {{ bgp.peer_ipv6 }} activate
+  neighbor {{ bgp.peer_ipv6 }} soft-reconfiguration inbound
+ exit-address-family
+{% endif %}
+exit
+{% endif %}
+!
+route-map ALLOW_IN permit 10
+exit
+!
+route-map ALLOW_OUT permit 10
+exit
+!
