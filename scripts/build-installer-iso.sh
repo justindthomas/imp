@@ -98,6 +98,7 @@ rsync
 vim-tiny
 less
 tmux
+ca-certificates
 
 # Build essentials (for DKMS)
 build-essential
