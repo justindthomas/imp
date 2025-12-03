@@ -57,7 +57,7 @@ log "Configuring live-build..."
 
 lb config \
     --distribution bookworm \
-    --archive-areas "main contrib" \
+    --archive-areas "main contrib non-free-firmware" \
     --debian-installer none \
     --binary-images iso-hybrid \
     --iso-application "IMP Installer" \
