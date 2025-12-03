@@ -104,32 +104,75 @@ echo "Installing Incus from backports..."
 chroot "$MOUNTPOINT" apt-get install -y -t bookworm-backports incus
 
 # =============================================================================
-# Copy configuration files
+# Copy configuration templates and scripts
 # =============================================================================
-echo "Copying configuration files..."
+echo "Copying configuration templates and scripts..."
 
-# VPP configuration
+# VPP configuration directory and log directory
 mkdir -p "${MOUNTPOINT}/etc/vpp"
-cp "${CONFIG_DIR}/etc/vpp/"* "${MOUNTPOINT}/etc/vpp/"
 mkdir -p "${MOUNTPOINT}/var/log/vpp"
 
-# FRR configuration
+# Copy static VPP startup configs (nat doesn't need templating)
+cp "${CONFIG_DIR}/etc/vpp/startup-nat.conf" "${MOUNTPOINT}/etc/vpp/"
+
+# FRR configuration (daemons and vtysh.conf are static)
 cp "${CONFIG_DIR}/etc/frr/daemons" "${MOUNTPOINT}/etc/frr/"
-cp "${CONFIG_DIR}/etc/frr/frr.conf" "${MOUNTPOINT}/etc/frr/"
 cp "${CONFIG_DIR}/etc/frr/vtysh.conf" "${MOUNTPOINT}/etc/frr/"
 chroot "$MOUNTPOINT" chown -R frr:frr /etc/frr
-chroot "$MOUNTPOINT" chmod 640 /etc/frr/frr.conf
 
-# Systemd service units for dataplane
-cp "${CONFIG_DIR}/etc/systemd/system/"*.service "${MOUNTPOINT}/etc/systemd/system/"
+# Systemd service units for dataplane (static services)
+cp "${CONFIG_DIR}/etc/systemd/system/netns-dataplane.service" "${MOUNTPOINT}/etc/systemd/system/"
+cp "${CONFIG_DIR}/etc/systemd/system/vpp-core.service" "${MOUNTPOINT}/etc/systemd/system/"
+cp "${CONFIG_DIR}/etc/systemd/system/vpp-core-config.service" "${MOUNTPOINT}/etc/systemd/system/"
+cp "${CONFIG_DIR}/etc/systemd/system/vpp-nat.service" "${MOUNTPOINT}/etc/systemd/system/"
+cp "${CONFIG_DIR}/etc/systemd/system/incus-dataplane.service" "${MOUNTPOINT}/etc/systemd/system/"
 
-# Helper scripts
+# Helper scripts (static scripts)
 mkdir -p "${MOUNTPOINT}/usr/local/bin"
-cp "${CONFIG_DIR}/usr/local/bin/"* "${MOUNTPOINT}/usr/local/bin/"
+cp "${CONFIG_DIR}/usr/local/bin/incus-init.sh" "${MOUNTPOINT}/usr/local/bin/"
+cp "${CONFIG_DIR}/usr/local/bin/wait-for-iface-load" "${MOUNTPOINT}/usr/local/bin/"
 chmod +x "${MOUNTPOINT}/usr/local/bin/"*
 
 # Create netns directory for dataplane namespace config
 mkdir -p "${MOUNTPOINT}/etc/netns/dataplane"
+
+# =============================================================================
+# Copy configuration templates for configure-router.sh
+# =============================================================================
+echo "Copying configuration templates..."
+
+# Templates directory
+mkdir -p "${MOUNTPOINT}/etc/imp/templates/vpp"
+mkdir -p "${MOUNTPOINT}/etc/imp/templates/frr"
+mkdir -p "${MOUNTPOINT}/etc/imp/templates/systemd"
+mkdir -p "${MOUNTPOINT}/etc/imp/templates/scripts"
+
+cp "${CONFIG_DIR}/templates/vpp/"*.tmpl "${MOUNTPOINT}/etc/imp/templates/vpp/"
+cp "${CONFIG_DIR}/templates/frr/"*.tmpl "${MOUNTPOINT}/etc/imp/templates/frr/"
+cp "${CONFIG_DIR}/templates/systemd/"*.tmpl "${MOUNTPOINT}/etc/imp/templates/systemd/"
+cp "${CONFIG_DIR}/templates/scripts/"*.tmpl "${MOUNTPOINT}/etc/imp/templates/scripts/"
+
+# Router configuration script and library
+mkdir -p "${MOUNTPOINT}/usr/local/lib/imp"
+cp "${SCRIPT_DIR}/configure-router.sh" "${MOUNTPOINT}/usr/local/bin/"
+cp "${SCRIPT_DIR}/lib/router-config-lib.sh" "${MOUNTPOINT}/usr/local/lib/imp/"
+chmod +x "${MOUNTPOINT}/usr/local/bin/configure-router.sh"
+
+# =============================================================================
+# Copy default configs (will be overwritten by configure-router.sh)
+# These provide a bootable system before configuration
+# =============================================================================
+echo "Copying default configuration files..."
+
+cp "${CONFIG_DIR}/etc/vpp/startup-core.conf" "${MOUNTPOINT}/etc/vpp/"
+cp "${CONFIG_DIR}/etc/vpp/commands-core.txt" "${MOUNTPOINT}/etc/vpp/"
+cp "${CONFIG_DIR}/etc/vpp/commands-nat.txt" "${MOUNTPOINT}/etc/vpp/"
+cp "${CONFIG_DIR}/etc/frr/frr.conf" "${MOUNTPOINT}/etc/frr/"
+cp "${CONFIG_DIR}/etc/systemd/system/netns-move-interfaces.service" "${MOUNTPOINT}/etc/systemd/system/"
+cp "${CONFIG_DIR}/usr/local/bin/vpp-core-config.sh" "${MOUNTPOINT}/usr/local/bin/"
+cp "${CONFIG_DIR}/usr/local/bin/incus-networking.sh" "${MOUNTPOINT}/usr/local/bin/"
+chroot "$MOUNTPOINT" chmod 640 /etc/frr/frr.conf
+chroot "$MOUNTPOINT" chown -R frr:frr /etc/frr
 
 # =============================================================================
 # Enable services

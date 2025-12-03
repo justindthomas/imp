@@ -1,0 +1,15 @@
+[Unit]
+Description=Move interfaces to dataplane
+Requires=netns-dataplane.service
+After=netns-dataplane.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+ExecStartPre=/usr/bin/echo "Moving interfaces to dataplane"
+ExecStart=/usr/sbin/ip link set ${EXTERNAL_IFACE} netns dataplane
+{{INTERNAL_IFACE_MOVES}}
+
+[Install]
+WantedBy=multi-user.target

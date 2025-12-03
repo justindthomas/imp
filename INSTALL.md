@@ -366,21 +366,35 @@ reboot
 
 ### Post-Deployment Configuration
 
-After first boot, the following machine-specific configuration may be needed:
+After deploying an image and rebooting, run the interactive configuration script:
 
-**1. VPP Configuration** (`/etc/vpp/`):
-- `startup-core.conf`: Update PCI device addresses in the `dpdk` section
-- `commands-core.txt`: Update IP addresses, prefixes, and ACLs
-- `commands-nat.txt`: Update NAT pool mappings
+```bash
+# Interactive configuration
+configure-router.sh
+```
 
-**2. Interface Names** (`/etc/systemd/system/netns-move-interfaces.service`):
-- Update interface names for your hardware (e.g., `enp4s0f0np0`)
+The script will guide you through:
 
-**3. FRR Configuration** (`/etc/frr/frr.conf`):
-- Update BGP router-id and peer addresses
-- Update announced prefixes
+1. **Interface Discovery** — Detects physical NICs and shows name, MAC, PCI address
+2. **Role Assignment** — Select which interface is management, external (WAN), and internal (LAN)
+3. **IP Configuration** — Enter IPv4/IPv6 addresses for external and internal interfaces
+4. **Management Configuration** — Choose DHCP or static IP for management interface
+5. **BGP Configuration** — Optionally configure BGP peering
+6. **NAT Configuration** — Set NAT pool and internal networks to NAT
 
-**4. Initialize Incus** (first boot only):
+Configuration is saved to `/persistent/config/router.conf` and survives image upgrades.
+
+#### Re-applying Configuration
+
+After deploying a new image, re-apply existing configuration:
+
+```bash
+configure-router.sh --apply-only
+```
+
+#### Initialize Incus
+
+After router configuration, initialize Incus (first boot only):
 ```bash
 # Interactive setup
 incus-init.sh
@@ -396,7 +410,19 @@ This script:
 - Sets gateway to VPP's host-interface (10.234.116.5)
 - Configures DHCP range for containers
 
-After making configuration changes, restart services:
+#### Manual Configuration (Advanced)
+
+If you need to manually edit configuration files:
+
+| File | Purpose |
+|------|---------|
+| `/etc/vpp/startup-core.conf` | VPP startup config, PCI addresses |
+| `/etc/vpp/commands-core.txt` | VPP runtime config, IPs, routes, ACLs |
+| `/etc/vpp/commands-nat.txt` | NAT pool mappings |
+| `/etc/frr/frr.conf` | BGP configuration |
+| `/etc/systemd/system/netns-move-interfaces.service` | Interface names to move |
+
+After making manual changes, restart services:
 ```bash
 systemctl restart vpp-core vpp-nat frr
 ```
