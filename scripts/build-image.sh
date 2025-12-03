@@ -88,6 +88,11 @@ rm "${MOUNTPOINT}/tmp/debconf-selections"
 # fd.io VPP Repository Setup
 # =============================================================================
 echo "Adding fd.io repository..."
+
+# Ensure DNS is working (mmdebstrap may have recreated resolv.conf symlink)
+rm -f "${MOUNTPOINT}/etc/resolv.conf"
+echo "nameserver 1.1.1.1" > "${MOUNTPOINT}/etc/resolv.conf"
+
 mkdir -p "${MOUNTPOINT}/etc/apt/keyrings"
 # Run gpg inside the chroot where gnupg is installed
 curl -fsSL https://packagecloud.io/fdio/release/gpgkey | \

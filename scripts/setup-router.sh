@@ -260,6 +260,10 @@ DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y \
 # =============================================================================
 log "Setting up fd.io repository..."
 
+# Restore DNS (systemd-resolved install recreates the symlink)
+rm -f "$ROOTFS/etc/resolv.conf"
+echo "nameserver 1.1.1.1" > "$ROOTFS/etc/resolv.conf"
+
 mkdir -p "$ROOTFS/etc/apt/keyrings"
 # Run gpg inside the chroot where gnupg is installed
 curl -fsSL https://packagecloud.io/fdio/release/gpgkey | \
