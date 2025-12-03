@@ -238,8 +238,9 @@ chroot "$ROOTFS" apt-get install -y \
 log "Setting up fd.io repository..."
 
 mkdir -p "$ROOTFS/etc/apt/keyrings"
+# Run gpg inside the chroot where gnupg is installed
 curl -fsSL https://packagecloud.io/fdio/release/gpgkey | \
-    gpg --dearmor -o "$ROOTFS/etc/apt/keyrings/fdio_release-archive-keyring.gpg"
+    chroot "$ROOTFS" gpg --dearmor -o /etc/apt/keyrings/fdio_release-archive-keyring.gpg
 
 # Copy fd.io sources list
 cp "$CONFIG_DIR/etc/apt/sources.list.d/fdio_release.list" "$ROOTFS/etc/apt/sources.list.d/"

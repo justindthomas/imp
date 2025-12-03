@@ -72,8 +72,9 @@ echo "root:appliance" | chroot "$MOUNTPOINT" chpasswd
 # =============================================================================
 echo "Adding fd.io repository..."
 mkdir -p "${MOUNTPOINT}/etc/apt/keyrings"
+# Run gpg inside the chroot where gnupg is installed
 curl -fsSL https://packagecloud.io/fdio/release/gpgkey | \
-    gpg --dearmor -o "${MOUNTPOINT}/etc/apt/keyrings/fdio_release-archive-keyring.gpg"
+    chroot "$MOUNTPOINT" gpg --dearmor -o /etc/apt/keyrings/fdio_release-archive-keyring.gpg
 
 # Copy fd.io sources list from config
 cp "${CONFIG_DIR}/etc/apt/sources.list.d/fdio_release.list" \
