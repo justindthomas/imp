@@ -15,9 +15,9 @@ The IMP build system creates bootable Debian images that can be deployed as ZFS 
 - **Routing**: FRR (Free Range Routing) in dedicated network namespace
 - **Container Runtime**: Incus (from bookworm-backports)
 
-## Part 1: Appliance Setup
+## Part 1: Router Setup
 
-These steps create the initial appliance with ZFS root and zfsbootmenu.
+These steps create a complete IMP router with ZFS root, VPP, FRR, and Incus.
 
 ### Prerequisites
 
@@ -34,7 +34,7 @@ Use the pre-built IMP Installer ISO which includes ZFS modules already compiled 
 sudo dd if=imp-installer-YYYYMMDD.iso of=/dev/sdX bs=4M status=progress
 
 # Boot from USB, then simply run:
-setup-appliance.sh /dev/sda
+setup-router.sh /dev/sda
 ```
 
 To build the installer ISO yourself (requires a Debian Bookworm system):
@@ -49,7 +49,7 @@ apt install live-build
 
 If using the stock Debian Live ISO, you'll need to compile ZFS modules first (30-45 minutes).
 
-Two scripts automate the process - first bootstrap ZFS on the Live CD, then run the appliance setup:
+Two scripts automate the process - first bootstrap ZFS on the Live CD, then run the router setup:
 
 ```bash
 sudo -i
@@ -57,30 +57,29 @@ sudo -i
 # Step 1: Bootstrap ZFS on the Live CD
 curl -sL https://raw.githubusercontent.com/your-org/imp-build/main/scripts/bootstrap-livecd.sh | bash
 
-# Step 2: Run appliance setup
-curl -LO https://raw.githubusercontent.com/your-org/imp-build/main/scripts/setup-appliance.sh
-chmod +x setup-appliance.sh
-./setup-appliance.sh /dev/sda
+# Step 2: Clone repo and run setup
+git clone https://github.com/your-org/imp-build.git
+cd imp-build
+./scripts/setup-router.sh /dev/sda
 ```
 
-Or clone the repo:
+Or if you already have the repo:
 
 ```bash
 sudo -i
-apt update && apt install -y git curl
-
-git clone https://github.com/your-org/imp-build.git
 cd imp-build
 ./scripts/bootstrap-livecd.sh
-./scripts/setup-appliance.sh /dev/sda
+./scripts/setup-router.sh /dev/sda
 ```
 
 The script will:
 1. Partition the disk (BIOS boot, ESP, ZFS)
 2. Create ZFS pool with boot environments and persistent datasets
 3. Bootstrap Debian Bookworm
-4. Install zfsbootmenu
-5. Configure the system for first boot
+4. Install VPP (from fd.io), FRR, and Incus
+5. Install configuration templates and tools
+6. Install zfsbootmenu
+7. Configure the system for first boot
 
 ### Manual Setup
 

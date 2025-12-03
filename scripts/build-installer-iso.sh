@@ -147,10 +147,10 @@ mkdir -p config/includes.chroot/root/imp-build/scripts
 # Copy scripts
 if [[ -d "${SCRIPT_DIR}/../scripts" ]]; then
     cp "${SCRIPT_DIR}/bootstrap-livecd.sh" config/includes.chroot/usr/local/bin/ 2>/dev/null || true
-    cp "${SCRIPT_DIR}/setup-appliance.sh" config/includes.chroot/usr/local/bin/ 2>/dev/null || true
+    cp "${SCRIPT_DIR}/setup-router.sh" config/includes.chroot/usr/local/bin/ 2>/dev/null || true
     cp "${SCRIPT_DIR}/setup-build-vm.sh" config/includes.chroot/usr/local/bin/ 2>/dev/null || true
 
-    # Also copy full scripts directory
+    # Also copy full scripts and config directory
     cp -r "${SCRIPT_DIR}"/../* config/includes.chroot/root/imp-build/ 2>/dev/null || true
 
     chmod +x config/includes.chroot/usr/local/bin/*.sh 2>/dev/null || true
@@ -163,20 +163,23 @@ mkdir -p config/includes.chroot/etc
 
 cat > config/includes.chroot/etc/motd << 'EOF'
 
- ___ __  __ ____    ___           _        _ _
-|_ _|  \/  |  _ \  |_ _|_ __  ___| |_ __ _| | | ___ _ __
- | || |\/| | |_) |  | || '_ \/ __| __/ _` | | |/ _ \ '__|
- | || |  | |  __/   | || | | \__ \ || (_| | | |  __/ |
-|___|_|  |_|_|     |___|_| |_|___/\__\__,_|_|_|\___|_|
+ ___ __  __ ____    ____             _
+|_ _|  \/  |  _ \  |  _ \ ___  _   _| |_ ___ _ __
+ | || |\/| | |_) | | |_) / _ \| | | | __/ _ \ '__|
+ | || |  | |  __/  |  _ < (_) | |_| | ||  __/ |
+|___|_|  |_|_|     |_| \_\___/ \__,_|\__\___|_|
 
 ZFS modules are pre-compiled and ready to use.
 
 Quick start:
-  setup-appliance.sh /dev/sda     # Install to disk
+  setup-router.sh /dev/sda     # Full router install (VPP, FRR, Incus)
 
 Or manually:
-  modprobe zfs                     # Load ZFS (should be instant)
-  lsblk                            # List disks
+  modprobe zfs                  # Load ZFS (should be instant)
+  lsblk                         # List disks
+
+After install, run:
+  configure-router              # Interactive network configuration
 
 Full documentation: /root/imp-build/
 

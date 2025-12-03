@@ -1,14 +1,18 @@
 #!/bin/bash
 #
-# setup-appliance.sh - Initial ZFS appliance setup from Live CD
+# setup-router.sh - Complete IMP router setup from Live CD
 #
-# This script partitions a disk, creates a ZFS pool, bootstraps Debian,
-# and installs zfsbootmenu for boot environment management.
+# This script:
+#   1. Partitions a disk and creates a ZFS pool
+#   2. Bootstraps Debian Bookworm
+#   3. Installs VPP (from fd.io), FRR, and Incus
+#   4. Installs configuration templates and scripts
+#   5. Sets up zfsbootmenu for boot environment management
 #
-# Usage: setup-appliance.sh <disk>
-# Example: setup-appliance.sh /dev/sda
+# Usage: setup-router.sh <disk>
+# Example: setup-router.sh /dev/sda
 #
-# Run from a Debian Bookworm Live CD with ZFS support.
+# Run from the IMP Installer ISO or a Debian Bookworm Live CD with ZFS support.
 #
 
 set -euo pipefail
@@ -16,13 +20,15 @@ set -euo pipefail
 DISK="${1:-}"
 POOL_NAME="tank"
 ROOTFS="/mnt/root"
-HOSTNAME="appliance"
+HOSTNAME="router"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_DIR="${SCRIPT_DIR}/../config"
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 log() { echo -e "${GREEN}[+]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
@@ -36,11 +42,9 @@ usage() {
     echo ""
     echo "This script will DESTROY all data on the target disk."
     echo ""
-    echo "Run from a Debian Bookworm Live CD after installing ZFS:"
+    echo "Run from the IMP Installer ISO or a Debian Live CD with ZFS:"
     echo "  sudo -i"
-    echo "  apt update && apt install -y zfsutils-linux zfs-dkms debootstrap gdisk"
-    echo "  modprobe zfs"
-    echo "  ./setup-appliance.sh /dev/sda"
+    echo "  ./setup-router.sh /dev/sda"
     exit 1
 }
 
@@ -56,15 +60,33 @@ if ! command -v zpool &>/dev/null; then
     error "ZFS not available. Install with: apt install -y zfsutils-linux zfs-dkms && modprobe zfs"
 fi
 
+# Check if config directory exists (running from repo)
+if [[ ! -d "$CONFIG_DIR" ]]; then
+    # Try alternate location (installed on ISO)
+    if [[ -d "/root/imp-build/config" ]]; then
+        CONFIG_DIR="/root/imp-build/config"
+        SCRIPT_DIR="/root/imp-build/scripts"
+    else
+        error "Cannot find config directory. Run from imp-build repository."
+    fi
+fi
+
 # Confirm destruction
 echo ""
 echo "=========================================="
-echo "  IMP Appliance Setup"
+echo "  IMP Router Setup"
 echo "=========================================="
 echo ""
 echo "Target disk: $DISK"
 echo "Pool name:   $POOL_NAME"
 echo "Hostname:    $HOSTNAME"
+echo ""
+echo "This will install:"
+echo "  - Debian Bookworm with ZFS root"
+echo "  - VPP (Vector Packet Processing)"
+echo "  - FRR (Free Range Routing)"
+echo "  - Incus (container runtime)"
+echo "  - IMP configuration tools"
 echo ""
 warn "This will DESTROY ALL DATA on $DISK"
 echo ""
@@ -139,7 +161,7 @@ zfs mount "${POOL_NAME}/ROOT/debian-initial"
 log "Bootstrapping Debian Bookworm (this takes a few minutes)..."
 
 debootstrap \
-    --include=linux-image-amd64,linux-headers-amd64,systemd,systemd-sysv,dbus,locales,keyboard-configuration,curl,gnupg \
+    --include=linux-image-amd64,linux-headers-amd64,systemd,systemd-sysv,dbus,locales,keyboard-configuration,curl,gnupg,ca-certificates \
     bookworm \
     "$ROOTFS" \
     https://deb.debian.org/debian
@@ -169,7 +191,7 @@ ff02::1     ip6-allnodes
 ff02::2     ip6-allrouters
 EOF
 
-# Apt sources
+# Apt sources (including backports for Incus)
 cat > "$ROOTFS/etc/apt/sources.list" << 'EOF'
 deb http://deb.debian.org/debian bookworm main contrib
 deb http://deb.debian.org/debian bookworm-updates main contrib
@@ -182,7 +204,7 @@ sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' "$ROOTFS/etc/locale.gen"
 chroot "$ROOTFS" locale-gen
 echo 'LANG=en_US.UTF-8' > "$ROOTFS/etc/default/locale"
 
-# Network config (DHCP on all ethernet)
+# Initial network config (DHCP on all ethernet - will be replaced by configure-router.py)
 mkdir -p "$ROOTFS/etc/systemd/network"
 cat > "$ROOTFS/etc/systemd/network/20-wired.network" << 'EOF'
 [Match]
@@ -192,8 +214,10 @@ Name=en*
 DHCP=yes
 EOF
 
-# Install packages in chroot
-log "Installing packages in chroot..."
+# =============================================================================
+# Install base packages
+# =============================================================================
+log "Installing base packages..."
 chroot "$ROOTFS" apt-get update
 chroot "$ROOTFS" apt-get install -y \
     zfsutils-linux \
@@ -204,15 +228,127 @@ chroot "$ROOTFS" apt-get install -y \
     openssh-server \
     efibootmgr \
     zstd \
-    console-setup
+    console-setup \
+    python3 \
+    python3-jinja2
 
+# =============================================================================
+# Setup fd.io repository and install VPP
+# =============================================================================
+log "Setting up fd.io repository..."
+
+mkdir -p "$ROOTFS/etc/apt/keyrings"
+curl -fsSL https://packagecloud.io/fdio/release/gpgkey | \
+    gpg --dearmor -o "$ROOTFS/etc/apt/keyrings/fdio_release-archive-keyring.gpg"
+
+# Copy fd.io sources list
+cp "$CONFIG_DIR/etc/apt/sources.list.d/fdio_release.list" "$ROOTFS/etc/apt/sources.list.d/"
+
+chroot "$ROOTFS" apt-get update
+
+log "Installing VPP..."
+chroot "$ROOTFS" apt-get install -y \
+    vpp \
+    vpp-plugin-core \
+    vpp-plugin-dpdk
+
+# =============================================================================
+# Install FRR
+# =============================================================================
+log "Installing FRR..."
+chroot "$ROOTFS" apt-get install -y frr frr-pythontools
+
+# =============================================================================
+# Install Incus from backports
+# =============================================================================
+log "Installing Incus from backports..."
+chroot "$ROOTFS" apt-get install -y -t bookworm-backports incus
+
+# =============================================================================
+# Copy configuration files and templates
+# =============================================================================
+log "Installing configuration files..."
+
+# VPP configuration directory
+mkdir -p "$ROOTFS/etc/vpp"
+mkdir -p "$ROOTFS/var/log/vpp"
+
+# Copy static VPP configs
+cp "$CONFIG_DIR/etc/vpp/startup-nat.conf" "$ROOTFS/etc/vpp/"
+
+# Copy default VPP configs (will be overwritten by configure-router.py)
+cp "$CONFIG_DIR/etc/vpp/startup-core.conf" "$ROOTFS/etc/vpp/"
+cp "$CONFIG_DIR/etc/vpp/commands-core.txt" "$ROOTFS/etc/vpp/"
+cp "$CONFIG_DIR/etc/vpp/commands-nat.txt" "$ROOTFS/etc/vpp/"
+
+# FRR configuration
+cp "$CONFIG_DIR/etc/frr/daemons" "$ROOTFS/etc/frr/"
+cp "$CONFIG_DIR/etc/frr/frr.conf" "$ROOTFS/etc/frr/"
+cp "$CONFIG_DIR/etc/frr/vtysh.conf" "$ROOTFS/etc/frr/"
+chroot "$ROOTFS" chown -R frr:frr /etc/frr
+chroot "$ROOTFS" chmod 640 /etc/frr/frr.conf
+
+# Systemd service units
+cp "$CONFIG_DIR/etc/systemd/system/netns-dataplane.service" "$ROOTFS/etc/systemd/system/"
+cp "$CONFIG_DIR/etc/systemd/system/netns-move-interfaces.service" "$ROOTFS/etc/systemd/system/"
+cp "$CONFIG_DIR/etc/systemd/system/vpp-core.service" "$ROOTFS/etc/systemd/system/"
+cp "$CONFIG_DIR/etc/systemd/system/vpp-core-config.service" "$ROOTFS/etc/systemd/system/"
+cp "$CONFIG_DIR/etc/systemd/system/vpp-nat.service" "$ROOTFS/etc/systemd/system/"
+cp "$CONFIG_DIR/etc/systemd/system/incus-dataplane.service" "$ROOTFS/etc/systemd/system/"
+
+# Helper scripts
+mkdir -p "$ROOTFS/usr/local/bin"
+cp "$CONFIG_DIR/usr/local/bin/incus-init.sh" "$ROOTFS/usr/local/bin/"
+cp "$CONFIG_DIR/usr/local/bin/wait-for-iface-load" "$ROOTFS/usr/local/bin/"
+cp "$CONFIG_DIR/usr/local/bin/vpp-core-config.sh" "$ROOTFS/usr/local/bin/"
+cp "$CONFIG_DIR/usr/local/bin/incus-networking.sh" "$ROOTFS/usr/local/bin/"
+chmod +x "$ROOTFS/usr/local/bin/"*
+
+# Create netns directory
+mkdir -p "$ROOTFS/etc/netns/dataplane"
+
+# =============================================================================
+# Install Jinja2 templates for configure-router.py
+# =============================================================================
+log "Installing configuration templates..."
+
+mkdir -p "$ROOTFS/etc/imp/templates/vpp"
+mkdir -p "$ROOTFS/etc/imp/templates/frr"
+mkdir -p "$ROOTFS/etc/imp/templates/systemd"
+mkdir -p "$ROOTFS/etc/imp/templates/scripts"
+
+cp "$CONFIG_DIR/templates/vpp/"*.j2 "$ROOTFS/etc/imp/templates/vpp/"
+cp "$CONFIG_DIR/templates/frr/"*.j2 "$ROOTFS/etc/imp/templates/frr/"
+cp "$CONFIG_DIR/templates/systemd/"*.j2 "$ROOTFS/etc/imp/templates/systemd/"
+cp "$CONFIG_DIR/templates/scripts/"*.j2 "$ROOTFS/etc/imp/templates/scripts/"
+
+# Install configure-router.py
+cp "$SCRIPT_DIR/configure-router.py" "$ROOTFS/usr/local/bin/"
+chmod +x "$ROOTFS/usr/local/bin/configure-router.py"
+ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure-router"
+
+# =============================================================================
 # Enable services
-chroot "$ROOTFS" systemctl enable systemd-networkd systemd-resolved ssh
+# =============================================================================
+log "Enabling services..."
+chroot "$ROOTFS" systemctl enable \
+    systemd-networkd \
+    systemd-resolved \
+    ssh \
+    netns-dataplane \
+    netns-move-interfaces \
+    vpp-core \
+    vpp-core-config \
+    vpp-nat \
+    frr \
+    incus-dataplane
 
+# =============================================================================
 # Set root password
+# =============================================================================
 log "Setting root password..."
-echo "root:appliance" | chroot "$ROOTFS" chpasswd
-warn "Default root password is 'appliance' - change it after first boot!"
+echo "root:router" | chroot "$ROOTFS" chpasswd
+warn "Default root password is 'router' - change it after first boot!"
 
 # Generate hostid (required for ZFS pool import)
 log "Generating hostid..."
@@ -225,6 +361,12 @@ log "Installing zfsbootmenu..."
 
 mkdir -p "$ROOTFS/boot/efi/EFI/ZBM"
 curl -L https://get.zfsbootmenu.org/efi -o "$ROOTFS/boot/efi/EFI/ZBM/zfsbootmenu.efi"
+
+# Remove any existing ZFSBootMenu entries to avoid duplicates
+log "Cleaning up existing ZFSBootMenu EFI entries..."
+for entry in $(efibootmgr | grep -i "ZFSBootMenu" | grep -oP 'Boot\K[0-9A-Fa-f]{4}'); do
+    efibootmgr -b "$entry" -B 2>/dev/null || true
+done
 
 # Create EFI boot entry
 chroot "$ROOTFS" efibootmgr -c -d "$DISK" -p 2 -L "ZFSBootMenu" -l '\EFI\ZBM\zfsbootmenu.efi'
@@ -282,19 +424,21 @@ zpool export "$POOL_NAME" || {
 
 echo ""
 echo "=========================================="
-log "Appliance setup complete!"
+log "IMP Router setup complete!"
 echo "=========================================="
 echo ""
-echo "Next steps:"
-echo "  1. Remove the Live CD"
-echo "  2. Reboot"
-echo "  3. zfsbootmenu should present your boot environment"
-echo "  4. Login as root (password: appliance)"
-echo "  5. Change the root password!"
+echo "Installed components:"
+echo "  - Debian Bookworm with ZFS root"
+echo "  - VPP (Vector Packet Processing) from fd.io"
+echo "  - FRR (Free Range Routing)"
+echo "  - Incus (container runtime)"
+echo "  - ZFSBootMenu"
 echo ""
-echo "To deploy IMP images to this appliance:"
-echo "  zstd -d < imp-v1.0.0.zfs.zst | zfs receive tank/ROOT/imp-v1.0.0"
-echo "  zfs set mountpoint=/ tank/ROOT/imp-v1.0.0"
-echo "  zpool set bootfs=tank/ROOT/imp-v1.0.0 tank"
-echo "  reboot"
+echo "Next steps:"
+echo "  1. Remove the Live CD/USB"
+echo "  2. Reboot"
+echo "  3. Login as root (password: router)"
+echo "  4. Run 'configure-router' to set up networking"
+echo "  5. Run 'incus-init.sh' to initialize containers"
+echo "  6. Change the root password!"
 echo ""
