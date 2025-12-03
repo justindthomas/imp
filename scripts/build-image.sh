@@ -48,6 +48,10 @@ mmdebstrap \
 echo "appliance" > "${MOUNTPOINT}/etc/hostname"
 echo "127.0.1.1 appliance" >> "${MOUNTPOINT}/etc/hosts"
 
+# Temporary DNS for chroot (systemd-resolved will take over after boot)
+rm -f "${MOUNTPOINT}/etc/resolv.conf"
+echo "nameserver 1.1.1.1" > "${MOUNTPOINT}/etc/resolv.conf"
+
 # Configure locale
 sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' "${MOUNTPOINT}/etc/locale.gen"
 chroot "$MOUNTPOINT" locale-gen
@@ -66,6 +70,19 @@ EOF
 
 # Set root password (change this!)
 echo "root:appliance" | chroot "$MOUNTPOINT" chpasswd
+
+# =============================================================================
+# Pre-seed debconf for non-interactive installation
+# =============================================================================
+cat > "${MOUNTPOINT}/tmp/debconf-selections" << 'EOF'
+# Console/keyboard configuration
+console-setup console-setup/charmap47 select UTF-8
+
+# ZFS license acknowledgment
+zfs-dkms zfs-dkms/note-incompatible-licenses note
+EOF
+chroot "$MOUNTPOINT" debconf-set-selections /tmp/debconf-selections
+rm "${MOUNTPOINT}/tmp/debconf-selections"
 
 # =============================================================================
 # fd.io VPP Repository Setup
@@ -87,7 +104,7 @@ chroot "$MOUNTPOINT" apt-get update
 # Install VPP packages
 # =============================================================================
 echo "Installing VPP..."
-chroot "$MOUNTPOINT" apt-get install -y \
+DEBIAN_FRONTEND=noninteractive chroot "$MOUNTPOINT" apt-get install -y \
     vpp \
     vpp-plugin-core \
     vpp-plugin-dpdk
@@ -96,19 +113,19 @@ chroot "$MOUNTPOINT" apt-get install -y \
 # Install FRR (Free Range Routing)
 # =============================================================================
 echo "Installing FRR..."
-chroot "$MOUNTPOINT" apt-get install -y frr frr-pythontools
+DEBIAN_FRONTEND=noninteractive chroot "$MOUNTPOINT" apt-get install -y frr frr-pythontools
 
 # =============================================================================
 # Install Incus from backports
 # =============================================================================
 echo "Installing Incus from backports..."
-chroot "$MOUNTPOINT" apt-get install -y -t bookworm-backports incus
+DEBIAN_FRONTEND=noninteractive chroot "$MOUNTPOINT" apt-get install -y -t bookworm-backports incus
 
 # =============================================================================
 # Install Python/Jinja2 for configuration script
 # =============================================================================
 echo "Installing Python/Jinja2..."
-chroot "$MOUNTPOINT" apt-get install -y python3 python3-jinja2
+DEBIAN_FRONTEND=noninteractive chroot "$MOUNTPOINT" apt-get install -y python3 python3-jinja2
 
 # =============================================================================
 # Copy configuration templates and scripts

@@ -176,6 +176,10 @@ mount --rbind /dev  "$ROOTFS/dev"
 mount --rbind /proc "$ROOTFS/proc"
 mount --rbind /sys  "$ROOTFS/sys"
 
+# Temporary DNS for chroot (systemd-resolved will take over after boot)
+rm -f "$ROOTFS/etc/resolv.conf"
+echo "nameserver 1.1.1.1" > "$ROOTFS/etc/resolv.conf"
+
 # Mount ESP
 mkdir -p "$ROOTFS/boot/efi"
 mount "${PART_PREFIX}2" "$ROOTFS/boot/efi"
@@ -215,11 +219,30 @@ DHCP=yes
 EOF
 
 # =============================================================================
+# Pre-seed debconf for non-interactive installation
+# =============================================================================
+log "Configuring non-interactive installation..."
+
+# Accept ZFS license
+cat > "$ROOTFS/tmp/debconf-selections" << 'EOF'
+# Keyboard configuration - use US layout
+keyboard-configuration keyboard-configuration/layoutcode string us
+keyboard-configuration keyboard-configuration/model select Generic 105-key PC
+keyboard-configuration keyboard-configuration/variant select English (US)
+console-setup console-setup/charmap47 select UTF-8
+
+# ZFS license acknowledgment
+zfs-dkms zfs-dkms/note-incompatible-licenses note
+EOF
+chroot "$ROOTFS" debconf-set-selections /tmp/debconf-selections
+rm "$ROOTFS/tmp/debconf-selections"
+
+# =============================================================================
 # Install base packages
 # =============================================================================
 log "Installing base packages..."
 chroot "$ROOTFS" apt-get update
-chroot "$ROOTFS" apt-get install -y \
+DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y \
     zfsutils-linux \
     zfs-initramfs \
     systemd-resolved \
@@ -248,7 +271,7 @@ cp "$CONFIG_DIR/etc/apt/sources.list.d/fdio_release.list" "$ROOTFS/etc/apt/sourc
 chroot "$ROOTFS" apt-get update
 
 log "Installing VPP..."
-chroot "$ROOTFS" apt-get install -y \
+DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y \
     vpp \
     vpp-plugin-core \
     vpp-plugin-dpdk
@@ -257,13 +280,13 @@ chroot "$ROOTFS" apt-get install -y \
 # Install FRR
 # =============================================================================
 log "Installing FRR..."
-chroot "$ROOTFS" apt-get install -y frr frr-pythontools
+DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y frr frr-pythontools
 
 # =============================================================================
 # Install Incus from backports
 # =============================================================================
 log "Installing Incus from backports..."
-chroot "$ROOTFS" apt-get install -y -t bookworm-backports incus
+DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y -t bookworm-backports incus
 
 # =============================================================================
 # Copy configuration files and templates
