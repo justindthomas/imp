@@ -189,39 +189,14 @@ chmod +x "${MOUNTPOINT}/usr/local/bin/configure-router.py"
 ln -sf configure-router.py "${MOUNTPOINT}/usr/local/bin/configure-router"
 
 # =============================================================================
-# Copy default configs (will be overwritten by configure-router.py)
-# These provide a bootable system before configuration
-# =============================================================================
-echo "Copying default configuration files..."
-
-cp "${CONFIG_DIR}/etc/vpp/startup-core.conf" "${MOUNTPOINT}/etc/vpp/"
-cp "${CONFIG_DIR}/etc/vpp/commands-core.txt" "${MOUNTPOINT}/etc/vpp/"
-cp "${CONFIG_DIR}/etc/vpp/commands-nat.txt" "${MOUNTPOINT}/etc/vpp/"
-cp "${CONFIG_DIR}/etc/frr/frr.conf" "${MOUNTPOINT}/etc/frr/"
-cp "${CONFIG_DIR}/etc/systemd/system/netns-move-interfaces.service" "${MOUNTPOINT}/etc/systemd/system/"
-cp "${CONFIG_DIR}/usr/local/bin/vpp-core-config.sh" "${MOUNTPOINT}/usr/local/bin/"
-cp "${CONFIG_DIR}/usr/local/bin/incus-networking.sh" "${MOUNTPOINT}/usr/local/bin/"
-chroot "$MOUNTPOINT" chmod 640 /etc/frr/frr.conf
-chroot "$MOUNTPOINT" chown -R frr:frr /etc/frr
-
-# =============================================================================
 # Enable services
 # =============================================================================
 echo "Enabling services..."
+# Only enable basic services - dataplane services are enabled by configure-router.py
 chroot "$MOUNTPOINT" systemctl enable \
     systemd-networkd \
     systemd-resolved \
-    ssh \
-    netns-dataplane \
-    netns-move-interfaces \
-    vpp-core \
-    vpp-core-config \
-    vpp-nat \
-    frr
-
-# Note: incus-dataplane is enabled but depends on incus.service
-# Incus itself needs initialization after first boot
-chroot "$MOUNTPOINT" systemctl enable incus-dataplane
+    ssh
 
 # =============================================================================
 # Finalize

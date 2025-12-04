@@ -293,43 +293,33 @@ log "Installing Incus from backports..."
 DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y -t bookworm-backports incus
 
 # =============================================================================
-# Copy configuration files and templates
+# Copy static configuration files (templates are used for machine-specific config)
 # =============================================================================
-log "Installing configuration files..."
+log "Installing static configuration files..."
 
-# VPP configuration directory
+# VPP directories
 mkdir -p "$ROOTFS/etc/vpp"
 mkdir -p "$ROOTFS/var/log/vpp"
 
-# Copy static VPP configs
+# Static VPP config (NAT startup doesn't need templating)
 cp "$CONFIG_DIR/etc/vpp/startup-nat.conf" "$ROOTFS/etc/vpp/"
 
-# Copy default VPP configs (will be overwritten by configure-router.py)
-cp "$CONFIG_DIR/etc/vpp/startup-core.conf" "$ROOTFS/etc/vpp/"
-cp "$CONFIG_DIR/etc/vpp/commands-core.txt" "$ROOTFS/etc/vpp/"
-cp "$CONFIG_DIR/etc/vpp/commands-nat.txt" "$ROOTFS/etc/vpp/"
-
-# FRR configuration
+# FRR static configuration (daemons list, vtysh settings)
 cp "$CONFIG_DIR/etc/frr/daemons" "$ROOTFS/etc/frr/"
-cp "$CONFIG_DIR/etc/frr/frr.conf" "$ROOTFS/etc/frr/"
 cp "$CONFIG_DIR/etc/frr/vtysh.conf" "$ROOTFS/etc/frr/"
 chroot "$ROOTFS" chown -R frr:frr /etc/frr
-chroot "$ROOTFS" chmod 640 /etc/frr/frr.conf
 
-# Systemd service units
+# Static systemd service units (netns-move-interfaces is templated)
 cp "$CONFIG_DIR/etc/systemd/system/netns-dataplane.service" "$ROOTFS/etc/systemd/system/"
-cp "$CONFIG_DIR/etc/systemd/system/netns-move-interfaces.service" "$ROOTFS/etc/systemd/system/"
 cp "$CONFIG_DIR/etc/systemd/system/vpp-core.service" "$ROOTFS/etc/systemd/system/"
 cp "$CONFIG_DIR/etc/systemd/system/vpp-core-config.service" "$ROOTFS/etc/systemd/system/"
 cp "$CONFIG_DIR/etc/systemd/system/vpp-nat.service" "$ROOTFS/etc/systemd/system/"
 cp "$CONFIG_DIR/etc/systemd/system/incus-dataplane.service" "$ROOTFS/etc/systemd/system/"
 
-# Helper scripts
+# Static helper scripts (vpp-core-config.sh and incus-networking.sh are templated)
 mkdir -p "$ROOTFS/usr/local/bin"
 cp "$CONFIG_DIR/usr/local/bin/incus-init.sh" "$ROOTFS/usr/local/bin/"
 cp "$CONFIG_DIR/usr/local/bin/wait-for-iface-load" "$ROOTFS/usr/local/bin/"
-cp "$CONFIG_DIR/usr/local/bin/vpp-core-config.sh" "$ROOTFS/usr/local/bin/"
-cp "$CONFIG_DIR/usr/local/bin/incus-networking.sh" "$ROOTFS/usr/local/bin/"
 chmod +x "$ROOTFS/usr/local/bin/"*
 
 # Create netns directory
@@ -359,17 +349,11 @@ ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure-router"
 # Enable services
 # =============================================================================
 log "Enabling services..."
+# Only enable basic services - dataplane services are enabled by configure-router.py
 chroot "$ROOTFS" systemctl enable \
     systemd-networkd \
     systemd-resolved \
-    ssh \
-    netns-dataplane \
-    netns-move-interfaces \
-    vpp-core \
-    vpp-core-config \
-    vpp-nat \
-    frr \
-    incus-dataplane
+    ssh
 
 # =============================================================================
 # Set root password
