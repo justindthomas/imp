@@ -376,8 +376,8 @@ curl -L https://get.zfsbootmenu.org/efi -o "$ROOTFS/boot/efi/EFI/ZBM/zfsbootmenu
 
 # Remove any existing ZFSBootMenu entries to avoid duplicates
 log "Cleaning up existing ZFSBootMenu EFI entries..."
-for entry in $(efibootmgr | grep -i "ZFSBootMenu" | grep -oP 'Boot\K[0-9A-Fa-f]{4}'); do
-    efibootmgr -b "$entry" -B 2>/dev/null || true
+for entry in $(chroot "$ROOTFS" efibootmgr | grep -i "ZFSBootMenu" | grep -oP 'Boot\K[0-9A-Fa-f]{4}'); do
+    chroot "$ROOTFS" efibootmgr -b "$entry" -B 2>/dev/null || true
 done
 
 # Create EFI boot entry
