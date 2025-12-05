@@ -58,6 +58,7 @@ def warn(msg: str) -> None:
 
 def error(msg: str) -> None:
     print(f"{Colors.RED}[ERROR]{Colors.NC} {msg}")
+    sys.exit(1)
 
 
 def info(msg: str) -> None:
@@ -162,9 +163,9 @@ class ContainerConfig:
 class RouterConfig:
     """Complete router configuration."""
     hostname: str = "appliance"
-    management: ManagementInterface = None
-    external: ExternalInterface = None
-    internal: list = field(default_factory=list)  # List of InternalInterface
+    management: ManagementInterface = field(default_factory=ManagementInterface)
+    external: ExternalInterface = field(default_factory=ExternalInterface)
+    internal: list[InternalInterface] = field(default_factory=list)  # List of InternalInterface
     bgp: BGPConfig = field(default_factory=BGPConfig)
     nat: NATConfig = field(default_factory=NATConfig)
     container: ContainerConfig = field(default_factory=ContainerConfig)
@@ -419,7 +420,6 @@ def phase1_detect_interfaces() -> list[InterfaceInfo]:
 
     if not interfaces:
         error("No physical network interfaces detected!")
-        sys.exit(1)
 
     info(f"Found {len(interfaces)} physical network interface(s):")
     show_interface_table(interfaces)
@@ -444,7 +444,6 @@ def phase2_assign_roles(interfaces: list[InterfaceInfo]) -> tuple[InterfaceInfo,
 
     if len(available) < 2:
         error("Need at least 2 more interfaces for external and internal roles")
-        sys.exit(1)
 
     # External interface
     print(f"\n{Colors.BOLD}External interface (WAN/Upstream){Colors.NC}")
@@ -675,12 +674,12 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path)
     # Prepare template context - convert dataclasses to dicts for easier access
     context = {
         'hostname': config.hostname,
-        'management': config.management,
-        'external': config.external,
-        'internal': config.internal,
-        'bgp': config.bgp,
-        'nat': config.nat,
-        'container': config.container,
+        'management': asdict(config.management),
+        'external': asdict(config.external),
+        'internal': [asdict(i) for i in config.internal],
+        'bgp': asdict(config.bgp),
+        'nat': asdict(config.nat),
+        'container': asdict(config.container),
     }
 
     # Render each template
@@ -705,7 +704,6 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path)
 
         except Exception as e:
             error(f"Failed to render {template_path}: {e}")
-            raise
 
     # Make scripts executable
     for script in ["vpp-core-config.sh", "incus-networking.sh"]:
@@ -842,18 +840,15 @@ def main() -> None:
     # Check we're running as root
     if os.geteuid() != 0:
         error("This script must be run as root")
-        sys.exit(1)
 
     # Check template directory exists
     if not args.template_dir.exists():
         error(f"Template directory not found: {args.template_dir}")
-        sys.exit(1)
 
     # Apply-only mode
     if args.apply_only:
         if not args.config_file.exists():
             error(f"No existing configuration found at {args.config_file}")
-            sys.exit(1)
 
         log(f"Applying existing configuration from {args.config_file}")
         config = load_config(args.config_file)
@@ -914,7 +909,6 @@ def main() -> None:
 
     if not phase7_confirm(config):
         error("Configuration cancelled")
-        sys.exit(1)
 
     render_templates(config, args.template_dir, GENERATED_DIR)
     apply_configs(GENERATED_DIR)
