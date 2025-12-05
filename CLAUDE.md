@@ -31,27 +31,22 @@ imp-build/
 ├── TEMPLATE_PLAN.md        # Design doc for router configuration
 ├── diagrams/
 │   └── vpp.pdf             # Architecture diagram
-├── config/                 # Configuration files copied into images
+├── config/                 # Static configuration files copied into images
 │   ├── etc/
 │   │   ├── apt/sources.list.d/
 │   │   │   └── fdio_release.list
 │   │   ├── frr/
-│   │   │   ├── daemons
-│   │   │   ├── frr.conf          # Default config (overwritten by configure-router.sh)
-│   │   │   └── vtysh.conf
+│   │   │   ├── daemons           # Static: FRR daemon enable flags
+│   │   │   └── vtysh.conf        # Static: vtysh settings
 │   │   ├── systemd/system/
 │   │   │   ├── netns-dataplane.service
-│   │   │   ├── netns-move-interfaces.service
 │   │   │   ├── vpp-core.service
 │   │   │   ├── vpp-core-config.service
 │   │   │   ├── vpp-nat.service
 │   │   │   └── incus-dataplane.service
 │   │   └── vpp/
-│   │       ├── startup-core.conf   # Default config (overwritten by configure-router.sh)
-│   │       ├── startup-nat.conf
-│   │       ├── commands-core.txt   # Default config (overwritten by configure-router.sh)
-│   │       └── commands-nat.txt    # Default config (overwritten by configure-router.sh)
-│   ├── templates/                  # Jinja2 templates for configure-router.py
+│   │       └── startup-nat.conf  # Static: NAT instance startup
+│   ├── templates/                # Jinja2 templates for configure-router.py
 │   │   ├── vpp/
 │   │   │   ├── startup-core.conf.j2
 │   │   │   ├── commands-core.txt.j2
@@ -65,18 +60,15 @@ imp-build/
 │   │       ├── vpp-core-config.sh.j2
 │   │       └── incus-networking.sh.j2
 │   └── usr/local/bin/
-│       ├── vpp-core-config.sh
-│       ├── incus-networking.sh
-│       ├── incus-init.sh
-│       └── wait-for-iface-load
+│       ├── incus-init.sh         # Static: Incus initialization
+│       └── wait-for-iface-load   # Static: Interface wait helper
 └── scripts/
     ├── build-installer-iso.sh  # Build custom Live ISO with ZFS pre-compiled
     ├── bootstrap-livecd.sh     # Add ZFS support to stock Debian Live CD
-    ├── setup-router.sh         # Complete router install from Live CD (ZFS + VPP + FRR)
+    ├── setup-router.sh         # Complete router install from Live CD
     ├── setup-build-vm.sh       # Build VM initialization
     ├── build-image.sh          # Builds a deployable ZFS image
-    ├── configure-router.py     # Interactive router configuration (Python/Jinja2)
-    └── deploy-image.sh         # Deploys an image to an appliance
+    └── configure-router.py     # Interactive router configuration (Python/Jinja2)
 ```
 
 ## Dataplane Architecture
@@ -176,6 +168,89 @@ Container → incusbr0 → veth → host-incus-dataplane (VPP) → NAT/Internet
 3. VPP applies ACL/ABF policy, forwards to NAT instance
 4. NAT instance translates to public IP
 
+## Configuration System
+
+The router configuration system uses Python with Jinja2 templates to generate machine-specific configuration files from user input.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         configure-router.py                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│  1. Interface Detection    │  Scans /sys/class/net for physical NICs    │
+│  2. User Input (phases)    │  Interactive prompts for roles, IPs, BGP   │
+│  3. RouterConfig object    │  Python dataclasses store all settings     │
+│  4. Save to JSON           │  /persistent/config/router.json            │
+│  5. Render templates       │  Jinja2 templates → config files           │
+│  6. Enable services        │  systemctl enable for dataplane services   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+```
+User Input → RouterConfig (dataclasses) → JSON file → Jinja2 Templates → Config Files
+                                              ↓
+                              /persistent/config/router.json
+                              (survives image upgrades)
+```
+
+### Configuration Phases
+
+The interactive configuration runs through 7 phases:
+
+1. **Interface Detection** — Discovers NICs, shows name/MAC/PCI/driver
+2. **Role Assignment** — User selects management, external, internal interfaces
+3. **Management Config** — DHCP or static IP for out-of-band management
+4. **External Config** — WAN IPv4/IPv6 addresses and gateways
+5. **Internal Config** — LAN IPv4/IPv6 addresses (supports multiple interfaces)
+6. **BGP Config** — Optional BGP peering (ASN, peer addresses)
+7. **NAT Config** — Public IP pool and internal networks to NAT
+
+### Static vs Generated Files
+
+**Static files** (copied during install, never change):
+- `/etc/vpp/startup-nat.conf` — NAT instance startup config
+- `/etc/frr/daemons` — Which FRR daemons to run
+- `/etc/frr/vtysh.conf` — vtysh shell settings
+- `/etc/systemd/system/*.service` — Service unit files (except netns-move-interfaces)
+
+**Generated files** (created by configure-router.py):
+
+| File | Template | Purpose |
+|------|----------|---------|
+| `/etc/vpp/startup-core.conf` | `startup-core.conf.j2` | VPP core startup, PCI addresses |
+| `/etc/vpp/commands-core.txt` | `commands-core.txt.j2` | VPP interfaces, IPs, routes, ACLs |
+| `/etc/vpp/commands-nat.txt` | `commands-nat.txt.j2` | NAT pool mappings |
+| `/etc/frr/frr.conf` | `frr.conf.j2` | BGP configuration |
+| `/etc/systemd/system/netns-move-interfaces.service` | `netns-move-interfaces.service.j2` | Interface names to move |
+| `/etc/systemd/network/10-management.network` | `management.network.j2` | Management interface config |
+| `/usr/local/bin/vpp-core-config.sh` | `vpp-core-config.sh.j2` | IPv6 RA configuration |
+| `/usr/local/bin/incus-networking.sh` | `incus-networking.sh.j2` | Container bridge setup |
+
+### Service Enable Flow
+
+On fresh install, only basic services are enabled:
+- `systemd-networkd`, `systemd-resolved`, `ssh`
+
+After running `configure-router.py`, dataplane services are enabled:
+- `netns-dataplane`, `netns-move-interfaces`
+- `vpp-core`, `vpp-core-config`, `vpp-nat`
+- `frr`, `incus-dataplane`
+
+This ensures the system boots to a usable state (SSH accessible) before configuration.
+
+### Re-applying Configuration
+
+After deploying a new image, existing configuration can be re-applied:
+
+```bash
+configure-router.py --apply-only
+```
+
+This reads `/persistent/config/router.json`, regenerates all config files, and enables services.
+
 ## Current State
 
 ### What's Working
@@ -186,46 +261,17 @@ Container → incusbr0 → veth → host-incus-dataplane (VPP) → NAT/Internet
 - Images can be received and booted on target appliances
 - Persistent datasets at `/persistent/config` and `/persistent/data` survive across deployments
 - VPP, FRR, and Incus installed in built images
-- Dataplane namespace and service chain configured
-- **Interactive router configuration** via `configure-router.sh`
-- **Configuration persistence** — Machine config saved to `/persistent/config/router.conf`
+- Dataplane services installed but not enabled (require configuration first)
+- **Interactive router configuration** via `configure-router.py`
+- **Configuration persistence** — Config saved to `/persistent/config/router.json`
 
 ### What Needs Work
 
+- **First-boot service** — Auto-run `configure-router.py` on first boot if no config exists
 - **First-boot initialization** — Incus requires `incus admin init` before use
 - **Build time optimization** — ZFS DKMS compilation takes 30+ minutes per build
 - **Image versioning/metadata** — No systematic way to track what's in an image
 - **Automated testing** — No validation that a built image actually boots
-- **First-boot service** — Auto-run `configure-router.sh` on first boot if no config exists
-
-### Machine-Specific Configuration
-
-The `configure-router.sh` script handles machine-specific configuration interactively:
-
-| Configuration | Source |
-|---------------|--------|
-| Interface roles (management, external, internal) | Auto-detected, user-selected |
-| PCI addresses | Auto-detected from selected interfaces |
-| IP addresses (IPv4/IPv6) | User input |
-| BGP configuration | User input (optional) |
-| NAT pool and internal networks | User input |
-
-Configuration is saved to `/persistent/config/router.json` and survives image upgrades.
-
-### Generated Files
-
-These files are generated by `configure-router.py` from Jinja2 templates:
-
-| File | Generated From |
-|------|----------------|
-| `/etc/vpp/startup-core.conf` | `templates/vpp/startup-core.conf.j2` |
-| `/etc/vpp/commands-core.txt` | `templates/vpp/commands-core.txt.j2` |
-| `/etc/vpp/commands-nat.txt` | `templates/vpp/commands-nat.txt.j2` |
-| `/etc/frr/frr.conf` | `templates/frr/frr.conf.j2` |
-| `/etc/systemd/system/netns-move-interfaces.service` | `templates/systemd/netns-move-interfaces.service.j2` |
-| `/etc/systemd/network/10-management.network` | `templates/systemd/management.network.j2` |
-| `/usr/local/bin/vpp-core-config.sh` | `templates/scripts/vpp-core-config.sh.j2` |
-| `/usr/local/bin/incus-networking.sh` | `templates/scripts/incus-networking.sh.j2` |
 
 ## Key Commands
 
@@ -342,15 +388,15 @@ tank/
 - VPP and plugins (from fd.io repository)
 - FRR (Free Range Routing)
 - Incus (from bookworm-backports)
-- Dataplane namespace services and configuration
+- Jinja2 templates and configure-router.py
 
 The script:
 1. Creates a fresh dataset in the build pool
 2. Bootstraps Debian Bookworm into it
 3. Adds fd.io repository and installs VPP
 4. Installs FRR and Incus
-5. Copies configuration from `config/` directory
-6. Enables all services
+5. Copies static configs and Jinja2 templates from `config/` directory
+6. Enables only basic services (ssh, networkd, resolved)
 7. Sets ZFS properties for bootability
 8. Snapshots and sends to a compressed file
 
@@ -374,7 +420,7 @@ The script:
 
 Suggested development priorities:
 
-1. **First-boot service** — Auto-run `configure-router.sh` on first boot, initialize Incus
+1. **First-boot service** — Auto-run `configure-router.py` on first boot, initialize Incus
 2. **Base service containers** — Unbound for DNS, Kea for DHCP, Suricata for IDS
 3. **NAT64 integration** — Add VPP NAT64 instance for IPv6-only client support
 4. **Image metadata** — Embed version info, build date, package manifest in images
