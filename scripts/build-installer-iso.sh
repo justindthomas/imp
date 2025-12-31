@@ -138,38 +138,6 @@ echo "ZFS modules built successfully"
 EOF
 chmod +x config/hooks/normal/0100-build-zfs-dkms.hook.chroot
 
-# Binary hook to fix ISOLINUX menu after live-build generates it
-cat > config/hooks/normal/9999-fix-isolinux-menu.hook.binary << 'EOF'
-#!/bin/bash
-# Fix ISOLINUX menu - remove duplicate entries added by live-build
-set -e
-
-ISOLINUX_DIR="binary/isolinux"
-
-if [[ -d "$ISOLINUX_DIR" ]]; then
-    echo "Fixing ISOLINUX menu entries..."
-
-    # Create clean live.cfg with only our entries
-    cat > "$ISOLINUX_DIR/live.cfg" << 'LIVECFG'
-label live-amd64
-    menu label ^IMP Router Installer
-    menu default
-    linux /live/vmlinuz
-    initrd /live/initrd.img
-    append boot=live components quiet splash
-
-label live-amd64-failsafe
-    menu label IMP Router Installer (^fail-safe mode)
-    linux /live/vmlinuz
-    initrd /live/initrd.img
-    append boot=live components memtest noapic noapm nodma nomce nolapic nomodeset nosmp nosplash vga=normal
-LIVECFG
-
-    echo "ISOLINUX menu fixed"
-fi
-EOF
-chmod +x config/hooks/normal/9999-fix-isolinux-menu.hook.binary
-
 # =============================================================================
 # Include IMP scripts
 # =============================================================================
