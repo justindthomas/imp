@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# setup-router.sh - Complete IMP router setup from Live CD
+# install-imp - Complete IMP router setup from Live CD
 #
 # This script:
 #   1. Partitions a disk and creates a ZFS pool
@@ -9,8 +9,8 @@
 #   4. Installs configuration templates and scripts
 #   5. Sets up zfsbootmenu for boot environment management
 #
-# Usage: setup-router.sh <disk>
-# Example: setup-router.sh /dev/sda
+# Usage: install-imp <disk>
+# Example: install-imp /dev/sda
 #
 # Run from the IMP Installer ISO or a Debian Bookworm Live CD with ZFS support.
 #

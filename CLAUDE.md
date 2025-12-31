@@ -65,10 +65,11 @@ imp-build/
 └── scripts/
     ├── build-installer-iso.sh  # Build custom Live ISO with ZFS pre-compiled
     ├── bootstrap-livecd.sh     # Add ZFS support to stock Debian Live CD
-    ├── setup-router.sh         # Complete router install from Live CD
+    ├── install-imp             # Complete router install from Live CD
     ├── setup-build-vm.sh       # Build VM initialization
     ├── build-image.sh          # Builds a deployable ZFS image
-    └── configure-router.py     # Interactive router configuration (Python/Jinja2)
+    ├── configure-router.py     # Interactive router configuration (Python/Jinja2)
+    └── imp                     # CLI management utility
 ```
 
 ## Dataplane Architecture

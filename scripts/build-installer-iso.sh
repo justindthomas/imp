@@ -149,7 +149,7 @@ mkdir -p config/includes.chroot/root/imp-build/scripts
 # Copy scripts
 if [[ -d "${SCRIPT_DIR}/../scripts" ]]; then
     cp "${SCRIPT_DIR}/bootstrap-livecd.sh" config/includes.chroot/usr/local/bin/ 2>/dev/null || true
-    cp "${SCRIPT_DIR}/setup-router.sh" config/includes.chroot/usr/local/bin/ 2>/dev/null || true
+    cp "${SCRIPT_DIR}/install-imp" config/includes.chroot/usr/local/bin/ 2>/dev/null || true
     cp "${SCRIPT_DIR}/setup-build-vm.sh" config/includes.chroot/usr/local/bin/ 2>/dev/null || true
 
     # Also copy full scripts and config directory
@@ -163,10 +163,14 @@ fi
 # =============================================================================
 log "Customizing boot menu..."
 
+# Copy default bootloader files first, then customize
+if [[ -d /usr/share/live/build/bootloaders/isolinux ]]; then
+    cp -r /usr/share/live/build/bootloaders/isolinux config/bootloaders/
+fi
+
 mkdir -p config/bootloaders/isolinux
 
-# Create a simple text-based splash (640x480, PNG format)
-# For a custom image, replace config/bootloaders/isolinux/splash.png
+# Override menu.cfg with custom styling
 cat > config/bootloaders/isolinux/menu.cfg << 'MENUEOF'
 menu hshift 0
 menu width 82
@@ -190,8 +194,8 @@ MENUEOF
 
 # Custom splash image - create a simple one with text
 # This creates a basic 640x480 splash using ImageMagick if available
-# Otherwise falls back to copying the default
 if command -v convert &>/dev/null; then
+    log "Generating custom splash image..."
     convert -size 640x480 xc:'#1a1a2e' \
         -font DejaVu-Sans-Bold -pointsize 48 -fill '#eaeaea' \
         -gravity center -annotate +0-80 'IMP Router' \
@@ -199,7 +203,15 @@ if command -v convert &>/dev/null; then
         -gravity center -annotate +0-20 'Internet Management Platform' \
         -font DejaVu-Sans -pointsize 14 -fill '#888888' \
         -gravity center -annotate +0+40 'ZFS • VPP • FRR • Incus' \
-        config/bootloaders/isolinux/splash.png 2>/dev/null || true
+        config/bootloaders/isolinux/splash.png
+
+    if [[ -f config/bootloaders/isolinux/splash.png ]]; then
+        log "Splash image created successfully"
+    else
+        warn "Failed to create splash image, using default"
+    fi
+else
+    warn "ImageMagick not found, using default splash image"
 fi
 
 # =============================================================================
@@ -218,14 +230,15 @@ cat > config/includes.chroot/etc/motd << 'EOF'
 ZFS modules are pre-compiled and ready to use.
 
 Quick start:
-  setup-router.sh /dev/sda     # Full router install (VPP, FRR, Incus)
+  install-imp /dev/sda          # Full router install (VPP, FRR, Incus)
 
 Or manually:
   modprobe zfs                  # Load ZFS (should be instant)
   lsblk                         # List disks
 
 After install, run:
-  configure-router              # Interactive network configuration
+  imp config edit               # Interactive network configuration
+  imp status                    # Check service status
 
 Full documentation: /root/imp-build/
 

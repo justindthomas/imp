@@ -34,7 +34,7 @@ Use the pre-built IMP Installer ISO which includes ZFS modules already compiled 
 sudo dd if=imp-installer-YYYYMMDD.iso of=/dev/sdX bs=4M status=progress
 
 # Boot from USB, then simply run:
-setup-router.sh /dev/sda
+install-imp /dev/sda
 ```
 
 To build the installer ISO yourself (requires a Debian Bookworm system):
@@ -60,7 +60,7 @@ curl -sL https://raw.githubusercontent.com/your-org/imp-build/main/scripts/boots
 # Step 2: Clone repo and run setup
 git clone https://github.com/your-org/imp-build.git
 cd imp-build
-./scripts/setup-router.sh /dev/sda
+./scripts/install-imp /dev/sda
 ```
 
 Or if you already have the repo:
@@ -69,7 +69,7 @@ Or if you already have the repo:
 sudo -i
 cd imp-build
 ./scripts/bootstrap-livecd.sh
-./scripts/setup-router.sh /dev/sda
+./scripts/install-imp /dev/sda
 ```
 
 The script will:
@@ -365,17 +365,17 @@ reboot
 
 ### Post-Deployment Configuration
 
-After deploying an image and rebooting, run the interactive configuration script:
+After deploying an image and rebooting, run the interactive configuration:
 
 ```bash
 # Interactive configuration
-configure-router.py
+imp config edit
 
-# Or use the symlink
-configure-router
+# Check service status
+imp status
 ```
 
-The script will guide you through:
+The configuration wizard will guide you through:
 
 1. **Interface Discovery** — Detects physical NICs and shows name, MAC, PCI address
 2. **Role Assignment** — Select which interface is management, external (WAN), and internal (LAN)
@@ -391,8 +391,10 @@ Configuration is saved to `/persistent/config/router.json` and survives image up
 After deploying a new image, re-apply existing configuration:
 
 ```bash
-configure-router.py --apply-only
+imp config apply
 ```
+
+Note: Configuration is automatically re-applied on boot via the `imp-apply-config` service.
 
 #### Initialize Incus
 
@@ -470,7 +472,10 @@ After deploying an image and rebooting, verify the dataplane is operational:
 ### Check Service Status
 
 ```bash
-# All dataplane services should be active
+# Quick status check
+imp status
+
+# Or check individual services
 systemctl status netns-dataplane
 systemctl status vpp-core
 systemctl status vpp-nat
@@ -490,8 +495,8 @@ ip netns exec dataplane ip link
 ### Verify VPP
 
 ```bash
-# Connect to VPP CLI
-vppctl -s /run/vpp/core-cli.sock
+# Connect to VPP core CLI
+imp shell core
 
 # Inside vppctl:
 show version
@@ -503,8 +508,8 @@ show ip fib
 ### Verify FRR
 
 ```bash
-# Run vtysh in the dataplane namespace
-ip netns exec dataplane vtysh
+# Open FRR routing shell
+imp shell routing
 
 # Inside vtysh:
 show ip bgp summary
@@ -515,7 +520,7 @@ show ip route
 
 ```bash
 # Connect to NAT instance
-vppctl -s /run/vpp/nat-cli.sock
+imp shell nat
 
 # Inside vppctl:
 show det44 sessions
