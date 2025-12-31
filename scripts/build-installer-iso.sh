@@ -168,6 +168,11 @@ mkdir -p config/bootloaders/isolinux
 # Copy default bootloader files first, then customize
 if [[ -d /usr/share/live/build/bootloaders/isolinux ]]; then
     cp -r /usr/share/live/build/bootloaders/isolinux/* config/bootloaders/isolinux/
+    # Remove default configs that we'll replace with our own
+    rm -f config/bootloaders/isolinux/live.cfg
+    rm -f config/bootloaders/isolinux/isolinux.cfg
+    rm -f config/bootloaders/isolinux/menu.cfg
+    rm -f config/bootloaders/isolinux/stdmenu.cfg
 fi
 
 # Create isolinux.cfg - the main entry point
@@ -269,6 +274,10 @@ log "Customizing GRUB EFI boot menu..."
 # Copy default grub-pc bootloader files (used for both BIOS and EFI in live-build)
 if [[ -d /usr/share/live/build/bootloaders/grub-pc ]]; then
     cp -r /usr/share/live/build/bootloaders/grub-pc config/bootloaders/
+    # Remove default configs we're replacing
+    rm -f config/bootloaders/grub-pc/grub.cfg
+    rm -f config/bootloaders/grub-pc/config.cfg
+    rm -f config/bootloaders/grub-pc/splash.cfg
 fi
 
 mkdir -p config/bootloaders/grub-pc
@@ -350,17 +359,14 @@ cat > config/bootloaders/grub-pc/grub.cfg << 'GRUBEOF'
 set default=0
 set timeout=5
 
-# Load our custom theme
-if [ -e $prefix/live-theme/theme.txt ]; then
-    set theme=$prefix/live-theme/theme.txt
-else
-    # Fallback: simple text mode with colors
-    set menu_color_normal=light-gray/black
-    set menu_color_highlight=white/dark-gray
-fi
+# Simple color scheme (themes are unreliable across GRUB versions)
+set menu_color_normal=light-gray/black
+set menu_color_highlight=white/blue
 
-# Remove the Debian splash image
-background_image
+# Try to load background image if available
+if [ -e $prefix/live-theme/background.png ]; then
+    background_image $prefix/live-theme/background.png
+fi
 
 menuentry "IMP Router Installer" {
     linux /live/vmlinuz boot=live components quiet splash
@@ -371,15 +377,15 @@ menuentry "IMP Router Installer (fail-safe mode)" {
     linux /live/vmlinuz boot=live components memtest noapic noapm nodma nomce nolapic nomodeset nosmp nosplash vga=normal
     initrd /live/initrd.img
 }
-
-menuentry "Utilities..." {
-    configfile /boot/grub/utilities.cfg
-}
 GRUBEOF
 
 # Also customize grub-efi if it exists (some live-build versions use separate dirs)
 if [[ -d /usr/share/live/build/bootloaders/grub-efi ]]; then
     cp -r /usr/share/live/build/bootloaders/grub-efi config/bootloaders/
+    # Remove default configs we're replacing
+    rm -f config/bootloaders/grub-efi/grub.cfg
+    rm -f config/bootloaders/grub-efi/config.cfg
+    rm -f config/bootloaders/grub-efi/splash.cfg
     # Copy our customizations to grub-efi as well
     cp -r config/bootloaders/grub-pc/live-theme config/bootloaders/grub-efi/
     cp config/bootloaders/grub-pc/grub.cfg config/bootloaders/grub-efi/
