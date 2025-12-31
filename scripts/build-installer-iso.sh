@@ -176,7 +176,7 @@ menu hshift 0
 menu width 82
 
 menu title IMP Router Installer
-menu background splash.png
+menu background splash800x600.png
 menu color title	* #FFFFFFFF *
 menu color border	* #00000000 #00000000 none
 menu color sel		* #ffffffff #76a1d0ff *
@@ -192,20 +192,20 @@ menu tabmsgrow 18
 menu tabmsg Press ENTER to boot or TAB to edit a menu entry
 MENUEOF
 
-# Custom splash image - create a simple one with text
-# This creates a basic 640x480 splash using ImageMagick if available
+# Custom splash image - create an 800x600 splash using ImageMagick if available
+# ISOLINUX expects splash800x600.png by default
 if command -v convert &>/dev/null; then
-    log "Generating custom splash image..."
-    convert -size 640x480 xc:'#1a1a2e' \
-        -font DejaVu-Sans-Bold -pointsize 48 -fill '#eaeaea' \
-        -gravity center -annotate +0-80 'IMP Router' \
-        -font DejaVu-Sans -pointsize 18 -fill '#aaaaaa' \
-        -gravity center -annotate +0-20 'Internet Management Platform' \
-        -font DejaVu-Sans -pointsize 14 -fill '#888888' \
-        -gravity center -annotate +0+40 'ZFS • VPP • FRR • Incus' \
-        config/bootloaders/isolinux/splash.png
+    log "Generating custom splash image (800x600)..."
+    convert -size 800x600 xc:'#1a1a2e' \
+        -font DejaVu-Sans-Bold -pointsize 56 -fill '#eaeaea' \
+        -gravity center -annotate +0-100 'IMP Router' \
+        -font DejaVu-Sans -pointsize 22 -fill '#aaaaaa' \
+        -gravity center -annotate +0-30 'Internet Management Platform' \
+        -font DejaVu-Sans -pointsize 16 -fill '#888888' \
+        -gravity center -annotate +0+30 'ZFS • VPP • FRR • Incus' \
+        config/bootloaders/isolinux/splash800x600.png
 
-    if [[ -f config/bootloaders/isolinux/splash.png ]]; then
+    if [[ -f config/bootloaders/isolinux/splash800x600.png ]]; then
         log "Splash image created successfully"
     else
         warn "Failed to create splash image, using default"
