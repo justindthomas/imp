@@ -159,16 +159,28 @@ if [[ -d "${SCRIPT_DIR}/../scripts" ]]; then
 fi
 
 # =============================================================================
-# Boot menu customization (ISOLINUX splash screen)
+# Boot menu customization (ISOLINUX for legacy BIOS)
 # =============================================================================
-log "Customizing boot menu..."
+log "Customizing ISOLINUX boot menu..."
+
+mkdir -p config/bootloaders/isolinux
 
 # Copy default bootloader files first, then customize
 if [[ -d /usr/share/live/build/bootloaders/isolinux ]]; then
-    cp -r /usr/share/live/build/bootloaders/isolinux config/bootloaders/
+    cp -r /usr/share/live/build/bootloaders/isolinux/* config/bootloaders/isolinux/
 fi
 
-mkdir -p config/bootloaders/isolinux
+# Create isolinux.cfg - the main entry point
+cat > config/bootloaders/isolinux/isolinux.cfg << 'ISOLINUXCFGEOF'
+# IMP Router Installer - ISOLINUX config
+path
+include menu.cfg
+include stdmenu.cfg
+include live.cfg
+default vesamenu.c32
+prompt 0
+timeout 50
+ISOLINUXCFGEOF
 
 # Override menu.cfg with custom styling
 cat > config/bootloaders/isolinux/menu.cfg << 'MENUEOF'
@@ -177,12 +189,24 @@ menu width 82
 
 menu title IMP Router Installer
 menu background splash800x600.png
-menu color title	* #FFFFFFFF *
-menu color border	* #00000000 #00000000 none
-menu color sel		* #ffffffff #76a1d0ff *
-menu color hotsel	1;7;37;40 #ffffffff #76a1d0ff *
-menu color tabmsg	* #ffffffff #00000000 *
-menu color help		37;40 #ffdddd00 #00000000 none
+menu color screen	37;40    #80ffffff #00000000 std
+menu color border	30;44    #40ffffff #00000000 std
+menu color title	1;36;44  #c0ffffff #00000000 std
+menu color unsel	37;44    #90ffffff #00000000 std
+menu color hotkey	1;37;44  #ffffffff #00000000 std
+menu color sel		7;37;40  #e0ffffff #20ffffff all
+menu color hotsel	1;7;37;40 #e0ffffff #20ffffff all
+menu color disabled	1;30;44  #60cccccc #00000000 std
+menu color scrollbar	30;44  #40ffffff #00000000 std
+menu color tabmsg	31;40    #90ffff00 #00000000 std
+menu color cmdmark	1;36;40  #c0ffffff #00000000 std
+menu color cmdline	37;40    #c0ffffff #00000000 std
+menu color pwdborder	30;47  #80ffffff #20ffffff std
+menu color pwdheader	31;47  #80ff8080 #20ffffff std
+menu color pwdentry	30;47  #80ffffff #20ffffff std
+menu color timeout_msg	37;40 #80ffffff #00000000 std
+menu color timeout	1;37;40  #c0ffffff #00000000 std
+menu color help		37;40    #c0ffffff #00000000 std
 menu vshift 12
 menu rows 10
 menu helpmsgrow 15
@@ -191,6 +215,29 @@ menu timeoutrow 16
 menu tabmsgrow 18
 menu tabmsg Press ENTER to boot or TAB to edit a menu entry
 MENUEOF
+
+# Create live.cfg with the actual boot entries
+cat > config/bootloaders/isolinux/live.cfg << 'LIVECFGEOF'
+label live-amd64
+    menu label ^IMP Router Installer
+    menu default
+    linux /live/vmlinuz
+    initrd /live/initrd.img
+    append boot=live components quiet splash
+
+label live-amd64-failsafe
+    menu label IMP Router Installer (^fail-safe mode)
+    linux /live/vmlinuz
+    initrd /live/initrd.img
+    append boot=live components memtest noapic noapm nodma nomce nolapic nomodeset nosmp nosplash vga=normal
+LIVECFGEOF
+
+# Create stdmenu.cfg (included by some configs)
+cat > config/bootloaders/isolinux/stdmenu.cfg << 'STDMENUEOF'
+menu background splash800x600.png
+menu color title	1;36;44 #c0ffffff #00000000 std
+menu color sel		7;37;40 #e0ffffff #20ffffff all
+STDMENUEOF
 
 # Custom splash image - create an 800x600 splash using ImageMagick if available
 # ISOLINUX expects splash800x600.png by default
@@ -212,6 +259,132 @@ if command -v convert &>/dev/null; then
     fi
 else
     warn "ImageMagick not found, using default splash image"
+fi
+
+# =============================================================================
+# Boot menu customization (GRUB EFI)
+# =============================================================================
+log "Customizing GRUB EFI boot menu..."
+
+# Copy default grub-pc bootloader files (used for both BIOS and EFI in live-build)
+if [[ -d /usr/share/live/build/bootloaders/grub-pc ]]; then
+    cp -r /usr/share/live/build/bootloaders/grub-pc config/bootloaders/
+fi
+
+mkdir -p config/bootloaders/grub-pc
+
+# Create custom GRUB theme directory
+mkdir -p config/bootloaders/grub-pc/live-theme
+
+# Generate GRUB background image (same as ISOLINUX but PNG format works)
+if command -v convert &>/dev/null; then
+    log "Generating GRUB background image..."
+    convert -size 800x600 xc:'#1a1a2e' \
+        -font DejaVu-Sans-Bold -pointsize 56 -fill '#eaeaea' \
+        -gravity north -annotate +0+80 'IMP Router' \
+        -font DejaVu-Sans -pointsize 22 -fill '#aaaaaa' \
+        -gravity north -annotate +0+150 'Internet Management Platform' \
+        -font DejaVu-Sans -pointsize 16 -fill '#888888' \
+        -gravity north -annotate +0+190 'ZFS • VPP • FRR • Incus' \
+        config/bootloaders/grub-pc/live-theme/background.png
+fi
+
+# Create GRUB theme file
+cat > config/bootloaders/grub-pc/live-theme/theme.txt << 'THEMEEOF'
+# IMP Router GRUB Theme
+desktop-image: "background.png"
+title-text: ""
+message-font: "DejaVu Sans Regular 12"
+terminal-font: "DejaVu Sans Mono Regular 12"
+
++ boot_menu {
+    left = 15%
+    top = 45%
+    width = 70%
+    height = 40%
+    item_font = "DejaVu Sans Regular 16"
+    item_color = "#aaaaaa"
+    selected_item_font = "DejaVu Sans Bold 16"
+    selected_item_color = "#ffffff"
+    item_height = 24
+    item_padding = 5
+    item_spacing = 10
+    selected_item_pixmap_style = "highlight_*.png"
+}
+
++ label {
+    left = 50%-150
+    top = 92%
+    width = 300
+    align = "center"
+    color = "#888888"
+    font = "DejaVu Sans Regular 10"
+    text = "Press 'e' to edit, 'c' for command line"
+}
+THEMEEOF
+
+# Override config.cfg to disable default splash/theme
+cat > config/bootloaders/grub-pc/config.cfg << 'CONFIGEOF'
+# Disable Debian default splash
+set timeout=5
+set default=0
+
+# Use our custom theme
+if [ -e $prefix/live-theme/theme.txt ]; then
+    set theme=$prefix/live-theme/theme.txt
+fi
+
+# Simple color scheme as fallback
+set menu_color_normal=light-gray/black
+set menu_color_highlight=white/blue
+CONFIGEOF
+
+# Override splash.cfg to remove Debian branding entirely
+cat > config/bootloaders/grub-pc/splash.cfg << 'SPLASHEOF'
+# IMP Router - No splash screen, just go to menu
+# This replaces the Debian hardhat splash
+SPLASHEOF
+
+# Override grub.cfg template to use our theme and remove Debian branding
+cat > config/bootloaders/grub-pc/grub.cfg << 'GRUBEOF'
+set default=0
+set timeout=5
+
+# Load our custom theme
+if [ -e $prefix/live-theme/theme.txt ]; then
+    set theme=$prefix/live-theme/theme.txt
+else
+    # Fallback: simple text mode with colors
+    set menu_color_normal=light-gray/black
+    set menu_color_highlight=white/dark-gray
+fi
+
+# Remove the Debian splash image
+background_image
+
+menuentry "IMP Router Installer" {
+    linux /live/vmlinuz boot=live components quiet splash
+    initrd /live/initrd.img
+}
+
+menuentry "IMP Router Installer (fail-safe mode)" {
+    linux /live/vmlinuz boot=live components memtest noapic noapm nodma nomce nolapic nomodeset nosmp nosplash vga=normal
+    initrd /live/initrd.img
+}
+
+menuentry "Utilities..." {
+    configfile /boot/grub/utilities.cfg
+}
+GRUBEOF
+
+# Also customize grub-efi if it exists (some live-build versions use separate dirs)
+if [[ -d /usr/share/live/build/bootloaders/grub-efi ]]; then
+    cp -r /usr/share/live/build/bootloaders/grub-efi config/bootloaders/
+    # Copy our customizations to grub-efi as well
+    cp -r config/bootloaders/grub-pc/live-theme config/bootloaders/grub-efi/
+    cp config/bootloaders/grub-pc/grub.cfg config/bootloaders/grub-efi/
+    cp config/bootloaders/grub-pc/config.cfg config/bootloaders/grub-efi/
+    cp config/bootloaders/grub-pc/splash.cfg config/bootloaders/grub-efi/
 fi
 
 # =============================================================================
