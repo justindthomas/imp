@@ -155,6 +155,7 @@ cp "${CONFIG_DIR}/etc/systemd/system/vpp-core.service" "${MOUNTPOINT}/etc/system
 cp "${CONFIG_DIR}/etc/systemd/system/vpp-core-config.service" "${MOUNTPOINT}/etc/systemd/system/"
 cp "${CONFIG_DIR}/etc/systemd/system/vpp-nat.service" "${MOUNTPOINT}/etc/systemd/system/"
 cp "${CONFIG_DIR}/etc/systemd/system/incus-dataplane.service" "${MOUNTPOINT}/etc/systemd/system/"
+cp "${CONFIG_DIR}/etc/systemd/system/imp-apply-config.service" "${MOUNTPOINT}/etc/systemd/system/"
 
 # Helper scripts (static scripts)
 mkdir -p "${MOUNTPOINT}/usr/local/bin"
@@ -188,15 +189,21 @@ chmod +x "${MOUNTPOINT}/usr/local/bin/configure-router.py"
 # Create symlink for convenience
 ln -sf configure-router.py "${MOUNTPOINT}/usr/local/bin/configure-router"
 
+# IMP CLI utility
+cp "${SCRIPT_DIR}/imp" "${MOUNTPOINT}/usr/local/bin/"
+chmod +x "${MOUNTPOINT}/usr/local/bin/imp"
+
 # =============================================================================
 # Enable services
 # =============================================================================
 echo "Enabling services..."
-# Only enable basic services - dataplane services are enabled by configure-router.py
+# Enable basic services and imp-apply-config (which auto-applies config on boot)
+# Other dataplane services are enabled by configure-router.py
 chroot "$MOUNTPOINT" systemctl enable \
     systemd-networkd \
     systemd-resolved \
-    ssh
+    ssh \
+    imp-apply-config
 
 # =============================================================================
 # Finalize

@@ -71,6 +71,16 @@ if [[ ! -d "$CONFIG_DIR" ]]; then
     fi
 fi
 
+# Check for existing pool
+EXISTING_POOL=""
+if zpool list "$POOL_NAME" &>/dev/null; then
+    EXISTING_POOL="imported"
+    warn "Pool '$POOL_NAME' is currently imported!"
+elif zpool import 2>/dev/null | grep -q "pool: $POOL_NAME"; then
+    EXISTING_POOL="available"
+    warn "Pool '$POOL_NAME' exists and can be imported!"
+fi
+
 # Confirm destruction
 echo ""
 echo "=========================================="
@@ -88,10 +98,28 @@ echo "  - FRR (Free Range Routing)"
 echo "  - Incus (container runtime)"
 echo "  - IMP configuration tools"
 echo ""
+if [[ -n "$EXISTING_POOL" ]]; then
+    echo -e "${RED}WARNING: A ZFS pool named '$POOL_NAME' already exists!${NC}"
+    echo "This pool will be DESTROYED and recreated."
+    echo ""
+fi
 warn "This will DESTROY ALL DATA on $DISK"
 echo ""
 read -p "Type 'yes' to continue: " CONFIRM
 [[ "$CONFIRM" != "yes" ]] && error "Aborted"
+
+# Handle existing pool
+if [[ "$EXISTING_POOL" == "imported" ]]; then
+    log "Exporting existing pool '$POOL_NAME'..."
+    zpool export "$POOL_NAME" || zpool export -f "$POOL_NAME" || error "Cannot export existing pool"
+fi
+
+if zpool import 2>/dev/null | grep -q "pool: $POOL_NAME"; then
+    log "Destroying existing pool '$POOL_NAME'..."
+    # Import and destroy
+    zpool import -f "$POOL_NAME" 2>/dev/null || true
+    zpool destroy -f "$POOL_NAME" 2>/dev/null || true
+fi
 
 # =============================================================================
 # Partition the disk
@@ -315,6 +343,7 @@ cp "$CONFIG_DIR/etc/systemd/system/vpp-core.service" "$ROOTFS/etc/systemd/system
 cp "$CONFIG_DIR/etc/systemd/system/vpp-core-config.service" "$ROOTFS/etc/systemd/system/"
 cp "$CONFIG_DIR/etc/systemd/system/vpp-nat.service" "$ROOTFS/etc/systemd/system/"
 cp "$CONFIG_DIR/etc/systemd/system/incus-dataplane.service" "$ROOTFS/etc/systemd/system/"
+cp "$CONFIG_DIR/etc/systemd/system/imp-apply-config.service" "$ROOTFS/etc/systemd/system/"
 
 # Static helper scripts (vpp-core-config.sh and incus-networking.sh are templated)
 mkdir -p "$ROOTFS/usr/local/bin"
@@ -345,15 +374,21 @@ cp "$SCRIPT_DIR/configure-router.py" "$ROOTFS/usr/local/bin/"
 chmod +x "$ROOTFS/usr/local/bin/configure-router.py"
 ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure-router"
 
+# Install imp CLI
+cp "$SCRIPT_DIR/imp" "$ROOTFS/usr/local/bin/"
+chmod +x "$ROOTFS/usr/local/bin/imp"
+
 # =============================================================================
 # Enable services
 # =============================================================================
 log "Enabling services..."
-# Only enable basic services - dataplane services are enabled by configure-router.py
+# Enable basic services and imp-apply-config (which auto-applies config on boot)
+# Other dataplane services are enabled by configure-router.py
 chroot "$ROOTFS" systemctl enable \
     systemd-networkd \
     systemd-resolved \
-    ssh
+    ssh \
+    imp-apply-config
 
 # =============================================================================
 # Set root password
@@ -450,7 +485,15 @@ echo "Next steps:"
 echo "  1. Remove the Live CD/USB"
 echo "  2. Reboot"
 echo "  3. Login as root (password: router)"
-echo "  4. Run 'configure-router' to set up networking"
+echo "  4. Run 'imp config edit' to set up networking"
 echo "  5. Run 'incus-init.sh' to initialize containers"
 echo "  6. Change the root password!"
+echo ""
+echo "IMP CLI commands:"
+echo "  imp config edit     - Configure router interactively"
+echo "  imp config apply    - Re-apply saved configuration"
+echo "  imp status          - Show service status"
+echo "  imp shell routing   - FRR/BGP shell (vtysh)"
+echo "  imp shell core      - VPP core CLI"
+echo "  imp shell nat       - VPP NAT CLI"
 echo ""

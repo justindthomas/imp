@@ -1,0 +1,16 @@
+[Unit]
+Description=Apply IMP router configuration from persistent storage
+DefaultDependencies=no
+After=local-fs.target
+Before=netns-dataplane.service
+ConditionPathExists=/persistent/config/router.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/imp config apply
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

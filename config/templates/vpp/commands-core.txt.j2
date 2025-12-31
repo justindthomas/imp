@@ -40,10 +40,10 @@ set interface ip address memif2/0 169.254.1.7/31
 # ACL-based forwarding to NAT for internal networks
 # Each internal network gets an ACL that:
 # - Denies traffic to container network (stays local)
-# - Denies traffic to other RFC1918 (hairpin prevention)
+# - Denies traffic to specific bypass pairs (direct routing)
 # - Permits everything else (goes to NAT)
 {% for iface in internal %}
-set acl-plugin acl deny src {{ iface.network }} dst {{ container.network }}, deny src {{ iface.network }} dst 192.168.0.0/16, deny src {{ iface.network }} dst 172.16.0.0/12, deny src {{ iface.network }} dst 10.0.0.0/8, permit src {{ iface.network }}
+set acl-plugin acl deny src {{ iface.network }} dst {{ container.network }}{% for bp in nat.bypass_pairs %}, deny src {{ bp.source }} dst {{ bp.destination }}{% endfor %}, permit src {{ iface.network }}
 abf policy add id {{ loop.index0 }} acl {{ loop.index0 }} via 169.254.1.5 memif1/0
 abf attach ip4 policy {{ loop.index0 }} {{ iface.vpp_name }}
 {% endfor %}
@@ -55,4 +55,35 @@ ip route add ::/0 via {{ external.ipv6_gateway }} external
 {% endif %}
 
 # Route for NAT pool (via NAT instance)
-ip route add {{ nat.pool }} via 169.254.1.6 memif2/0
+ip route add {{ nat.bgp_prefix }} via 169.254.1.6 memif2/0
+{% if vlan_passthrough %}
+
+# VLAN pass-through (L2 cross-connect between external and internal interfaces)
+{% for v in vlan_passthrough %}
+{% if v.inner_vlan %}
+# QinQ VLAN {{ v.vlan_id }}.{{ v.inner_vlan }} <-> {{ v.internal_interface }}
+create sub-interface external {{ v.vlan_id }} inner-dot1q {{ v.inner_vlan }}
+create sub-interface {{ v.internal_interface }} {{ v.vlan_id }} inner-dot1q {{ v.inner_vlan }}
+set interface state external.{{ v.vlan_id }}.{{ v.inner_vlan }} up
+set interface state {{ v.internal_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }} up
+set interface l2 xconnect external.{{ v.vlan_id }}.{{ v.inner_vlan }} {{ v.internal_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }}
+set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }} external.{{ v.vlan_id }}.{{ v.inner_vlan }}
+{% elif v.vlan_type == 'dot1ad' %}
+# QinQ S-VLAN {{ v.vlan_id }} (all C-tags) <-> {{ v.internal_interface }}
+create sub-interface external {{ v.vlan_id }} dot1ad
+create sub-interface {{ v.internal_interface }} {{ v.vlan_id }} dot1ad
+set interface state external.{{ v.vlan_id }} up
+set interface state {{ v.internal_interface }}.{{ v.vlan_id }} up
+set interface l2 xconnect external.{{ v.vlan_id }} {{ v.internal_interface }}.{{ v.vlan_id }}
+set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }} external.{{ v.vlan_id }}
+{% else %}
+# 802.1Q VLAN {{ v.vlan_id }} <-> {{ v.internal_interface }}
+create sub-interface external {{ v.vlan_id }}
+create sub-interface {{ v.internal_interface }} {{ v.vlan_id }}
+set interface state external.{{ v.vlan_id }} up
+set interface state {{ v.internal_interface }}.{{ v.vlan_id }} up
+set interface l2 xconnect external.{{ v.vlan_id }} {{ v.internal_interface }}.{{ v.vlan_id }}
+set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }} external.{{ v.vlan_id }}
+{% endif %}
+{% endfor %}
+{% endif %}

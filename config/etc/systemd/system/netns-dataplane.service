@@ -1,8 +1,7 @@
 [Unit]
 Description=Dataplane network namespace
-#After=local-fs.target
-#Wants=network-online.target
-#After=network-online.target
+After=local-fs.target imp-apply-config.service
+Wants=imp-apply-config.service
 
 [Service]
 Type=oneshot

@@ -99,6 +99,8 @@ vim-tiny
 less
 tmux
 ca-certificates
+pciutils
+net-tools
 
 # Build essentials (for DKMS)
 build-essential

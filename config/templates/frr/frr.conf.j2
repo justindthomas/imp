@@ -4,11 +4,8 @@ hostname {{ hostname }}
 log syslog informational
 service integrated-vtysh-config
 !
-# Blackhole routes for announced prefixes
-{% for network in nat.internal_networks %}
-ip route {{ network }} blackhole
-{% endfor %}
-ip route {{ nat.pool }} 169.254.1.6 memif2
+# Route for NAT pool (via NAT instance)
+ip route {{ nat.bgp_prefix }} 169.254.1.6 memif2
 {% for iface in internal %}
 {% if iface.ipv6 %}
 ipv6 route {{ iface.ipv6_network }} blackhole
@@ -31,10 +28,7 @@ router bgp {{ bgp.asn }}
 {% endif %}
  !
  address-family ipv4 unicast
-{% for network in nat.internal_networks %}
-  network {{ network }}
-{% endfor %}
-  network {{ nat.pool }}
+  network {{ nat.bgp_prefix }}
   redistribute connected route-map ALLOW_OUT
 {% if bgp.peer_ipv4 %}
   neighbor {{ bgp.peer_ipv4 }} activate

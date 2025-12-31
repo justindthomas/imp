@@ -148,10 +148,34 @@ class BGPConfig:
 
 
 @dataclass
+class NATMapping:
+    """A single det44 NAT mapping."""
+    source_network: str  # e.g., "192.168.20.0/24"
+    nat_pool: str  # e.g., "23.177.24.96/30"
+
+
+@dataclass
+class ACLBypassPair:
+    """A source/destination pair that should skip NAT (allow direct routing)."""
+    source: str  # e.g., "192.168.20.0/24"
+    destination: str  # e.g., "192.168.37.0/24"
+
+
+@dataclass
+class VLANPassthrough:
+    """A VLAN to pass through (L2 xconnect) between external and an internal interface."""
+    vlan_id: int  # VLAN ID (same on both sides)
+    internal_interface: str  # VPP interface name, e.g., "internal0"
+    vlan_type: str = "dot1q"  # "dot1q" (802.1Q) or "dot1ad" (QinQ S-tag)
+    inner_vlan: Optional[int] = None  # For QinQ: the inner C-tag (if specific)
+
+
+@dataclass
 class NATConfig:
     """NAT configuration."""
-    pool: str = ""
-    internal_networks: list = field(default_factory=list)
+    bgp_prefix: str = ""  # The prefix to announce via BGP (e.g., "23.177.24.96/29")
+    mappings: list[NATMapping] = field(default_factory=list)  # det44 source -> pool mappings
+    bypass_pairs: list[ACLBypassPair] = field(default_factory=list)  # ACL bypass rules
 
 
 @dataclass
@@ -175,6 +199,7 @@ class RouterConfig:
     bgp: BGPConfig = field(default_factory=BGPConfig)
     nat: NATConfig = field(default_factory=NATConfig)
     container: ContainerConfig = field(default_factory=ContainerConfig)
+    vlan_passthrough: list[VLANPassthrough] = field(default_factory=list)
 
 
 # =============================================================================
@@ -589,26 +614,149 @@ def phase6_nat_config(internal: list[InternalInterface], container: ContainerCon
     """Phase 6: Configure NAT."""
     log("Phase 6: NAT Configuration")
 
+    # BGP prefix for announcement
+    print()
+    print(f"  {Colors.BOLD}BGP NAT Prefix{Colors.NC}")
+    print("  This is the prefix announced via BGP for NAT (e.g., 23.177.24.96/29).")
+    print("  It can be larger than the actual det44 pools.")
+    print()
     while True:
-        pool = input("  NAT Pool (public IPs, CIDR): ").strip()
-        if validate_ipv4_cidr(pool):
+        bgp_prefix = input("  BGP NAT prefix [CIDR]: ").strip()
+        if validate_ipv4_cidr(bgp_prefix):
             break
         warn("Invalid IPv4 CIDR format")
 
+    # det44 mappings
     print()
-    print("  Enter internal networks to NAT (comma-separated).")
-    print("  These can be directly connected or reachable via downstream routers.")
-    print("  Example: 192.168.20.0/24, 10.10.30.0/24")
+    print(f"  {Colors.BOLD}NAT Pool Mappings{Colors.NC}")
+    print("  Define det44 mappings: which internal networks map to which NAT pools.")
+    print("  The NAT pools should be subsets of the BGP prefix.")
+    print("  Example: 192.168.20.0/24 -> 23.177.24.96/30")
     print()
 
-    networks = prompt_list("Internal networks", validate=validate_ipv4_cidr)
+    mappings = []
 
-    # Add container network if not already there
-    if container.network not in networks:
-        networks.append(container.network)
-        info(f"Added container network {container.network} to NAT list")
+    # Collect internal network mappings
+    for iface in internal:
+        print(f"  Internal interface {iface.vpp_name} ({iface.network}):")
+        while True:
+            pool = input(f"    NAT pool for {iface.network} [CIDR]: ").strip()
+            if validate_ipv4_cidr(pool):
+                break
+            warn("Invalid IPv4 CIDR format")
+        mappings.append(NATMapping(source_network=iface.network, nat_pool=pool))
 
-    return NATConfig(pool=pool, internal_networks=networks)
+    # Container network mapping
+    print(f"\n  Container network ({container.network}):")
+    while True:
+        pool = input(f"    NAT pool for {container.network} [CIDR]: ").strip()
+        if validate_ipv4_cidr(pool):
+            break
+        warn("Invalid IPv4 CIDR format")
+    mappings.append(NATMapping(source_network=container.network, nat_pool=pool))
+
+    # ACL bypass pairs
+    print()
+    print(f"  {Colors.BOLD}NAT Bypass Rules{Colors.NC}")
+    print("  Define source/destination pairs that should skip NAT (direct routing).")
+    print("  Example: traffic from 192.168.20.0/24 to 192.168.37.0/24 goes directly.")
+    print()
+
+    bypass_pairs = []
+    if prompt_yes_no("Add NAT bypass rules?", default=False):
+        while True:
+            print()
+            while True:
+                src = input("    Source network [CIDR]: ").strip()
+                if validate_ipv4_cidr(src):
+                    break
+                warn("Invalid IPv4 CIDR format")
+
+            while True:
+                dst = input("    Destination network [CIDR]: ").strip()
+                if validate_ipv4_cidr(dst):
+                    break
+                warn("Invalid IPv4 CIDR format")
+
+            bypass_pairs.append(ACLBypassPair(source=src, destination=dst))
+            info(f"Added bypass: {src} -> {dst}")
+
+            if not prompt_yes_no("Add another bypass rule?", default=False):
+                break
+
+    return NATConfig(bgp_prefix=bgp_prefix, mappings=mappings, bypass_pairs=bypass_pairs)
+
+
+def phase_vlan_passthrough(internal: list[InternalInterface]) -> list[VLANPassthrough]:
+    """Configure VLAN pass-through (L2 cross-connect between external and internal)."""
+    log("VLAN Pass-through Configuration (Optional)")
+
+    print()
+    print("  VLAN pass-through allows L2 traffic on specific VLANs to pass")
+    print("  directly between the external and internal interfaces.")
+    print("  This is useful for passing customer VLANs, QinQ traffic, etc.")
+    print()
+
+    if not prompt_yes_no("Configure VLAN pass-through?", default=False):
+        return []
+
+    # Build list of internal interface names
+    internal_names = [iface.vpp_name for iface in internal]
+
+    vlans = []
+    while True:
+        print()
+        print(f"  {Colors.BOLD}Add VLAN pass-through rule:{Colors.NC}")
+
+        # VLAN type
+        vlan_type_idx = prompt_select("VLAN type:", [
+            "802.1Q (single tag)",
+            "802.1ad/QinQ (S-tag only, all C-tags pass through)",
+            "802.1ad/QinQ (specific S-tag + C-tag)"
+        ])
+
+        vlan_type = "dot1q"
+        inner_vlan = None
+
+        if vlan_type_idx == 1:
+            vlan_type = "dot1ad"
+        elif vlan_type_idx == 2:
+            vlan_type = "dot1ad"
+
+        # Outer VLAN ID
+        vlan_id = prompt_int("  VLAN ID (outer/S-tag)", min_val=1, max_val=4094)
+
+        # Inner VLAN for specific QinQ
+        if vlan_type_idx == 2:
+            inner_vlan = prompt_int("  Inner VLAN ID (C-tag)", min_val=1, max_val=4094)
+
+        # Select internal interface
+        if len(internal_names) == 1:
+            internal_iface = internal_names[0]
+            info(f"Using internal interface: {internal_iface}")
+        else:
+            idx = prompt_select("Select internal interface:", internal_names)
+            internal_iface = internal_names[idx]
+
+        vlans.append(VLANPassthrough(
+            vlan_id=vlan_id,
+            internal_interface=internal_iface,
+            vlan_type=vlan_type,
+            inner_vlan=inner_vlan
+        ))
+
+        # Show what was added
+        if inner_vlan:
+            info(f"Added: VLAN {vlan_id}.{inner_vlan} (QinQ) <-> {internal_iface}")
+        elif vlan_type == "dot1ad":
+            info(f"Added: S-VLAN {vlan_id} (QinQ, all C-tags) <-> {internal_iface}")
+        else:
+            info(f"Added: VLAN {vlan_id} (802.1Q) <-> {internal_iface}")
+
+        if not prompt_yes_no("Add another VLAN pass-through?", default=False):
+            break
+
+    return vlans
 
 
 def phase7_confirm(config: RouterConfig) -> bool:
@@ -643,13 +791,31 @@ def phase7_confirm(config: RouterConfig) -> bool:
 
     print()
     print("NAT:")
-    print(f"  Pool:       {config.nat.pool}")
-    print(f"  Networks:   {', '.join(config.nat.internal_networks)}")
+    print(f"  BGP Prefix: {config.nat.bgp_prefix}")
+    print("  Mappings:")
+    for m in config.nat.mappings:
+        print(f"    {m.source_network} -> {m.nat_pool}")
+    if config.nat.bypass_pairs:
+        print("  Bypass Rules:")
+        for bp in config.nat.bypass_pairs:
+            print(f"    {bp.source} -> {bp.destination}")
 
     print()
     print("CONTAINERS:")
     print(f"  Network:    {config.container.network}")
     print(f"  Gateway:    {config.container.gateway}")
+
+    if config.vlan_passthrough:
+        print()
+        print("VLAN PASS-THROUGH:")
+        for v in config.vlan_passthrough:
+            if v.inner_vlan:
+                print(f"  VLAN {v.vlan_id}.{v.inner_vlan} (QinQ) <-> {v.internal_interface}")
+            elif v.vlan_type == "dot1ad":
+                print(f"  S-VLAN {v.vlan_id} (QinQ) <-> {v.internal_interface}")
+            else:
+                print(f"  VLAN {v.vlan_id} (802.1Q) <-> {v.internal_interface}")
+
     print()
     print("=" * 50)
     print()
@@ -686,6 +852,7 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path)
         'bgp': config.bgp,
         'nat': config.nat,
         'container': config.container,
+        'vlan_passthrough': config.vlan_passthrough,
     }
 
     # Render each template
@@ -806,14 +973,27 @@ def load_config(config_file: Path) -> RouterConfig:
         data = json.load(f)
 
     # Reconstruct dataclasses
+    nat_data = data['nat']
+    nat = NATConfig(
+        bgp_prefix=nat_data.get('bgp_prefix', ''),
+        mappings=[NATMapping(**m) for m in nat_data.get('mappings', [])],
+        bypass_pairs=[ACLBypassPair(**bp) for bp in nat_data.get('bypass_pairs', [])]
+    )
+
+    # Handle VLAN passthrough
+    vlan_passthrough = [
+        VLANPassthrough(**v) for v in data.get('vlan_passthrough', [])
+    ]
+
     config = RouterConfig(
         hostname=data.get('hostname', 'appliance'),
         management=ManagementInterface(**data['management']),
         external=ExternalInterface(**data['external']),
         internal=[InternalInterface(**i) for i in data['internal']],
         bgp=BGPConfig(**data['bgp']),
-        nat=NATConfig(**data['nat']),
+        nat=nat,
         container=ContainerConfig(**data['container']),
+        vlan_passthrough=vlan_passthrough,
     )
 
     return config
@@ -901,6 +1081,7 @@ def main() -> None:
 
     bgp = phase5_bgp_config(external)
     nat = phase6_nat_config(internal, container)
+    vlan_passthrough = phase_vlan_passthrough(internal)
 
     # Build config object
     config = RouterConfig(
@@ -911,6 +1092,7 @@ def main() -> None:
         bgp=bgp,
         nat=nat,
         container=container,
+        vlan_passthrough=vlan_passthrough,
     )
 
     if not phase7_confirm(config):

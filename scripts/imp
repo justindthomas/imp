@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""
+imp - IMP Router Management CLI
+
+Usage:
+    imp config apply          Apply configuration from /persistent/config/router.json
+    imp config edit           Edit configuration interactively
+    imp shell routing         Open FRR/vtysh shell (routing protocols)
+    imp shell core            Open VPP core instance CLI
+    imp shell nat             Open VPP NAT instance CLI
+    imp status                Show service status
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+CONFIG_FILE = Path("/persistent/config/router.json")
+VPP_CORE_SOCKET = "/run/vpp/core-cli.sock"
+VPP_NAT_SOCKET = "/run/vpp/nat-cli.sock"
+DATAPLANE_NS = "dataplane"
+
+
+# =============================================================================
+# Colors
+# =============================================================================
+
+class Colors:
+    RED = "\033[0;31m"
+    GREEN = "\033[0;32m"
+    YELLOW = "\033[1;33m"
+    CYAN = "\033[0;36m"
+    BOLD = "\033[1m"
+    NC = "\033[0m"
+
+
+def log(msg: str) -> None:
+    print(f"{Colors.GREEN}[+]{Colors.NC} {msg}")
+
+
+def warn(msg: str) -> None:
+    print(f"{Colors.YELLOW}[!]{Colors.NC} {msg}")
+
+
+def error(msg: str) -> None:
+    print(f"{Colors.RED}[ERROR]{Colors.NC} {msg}")
+
+
+# =============================================================================
+# Config Commands
+# =============================================================================
+
+def cmd_config_apply(args) -> int:
+    """Apply configuration from persistent storage."""
+    if not CONFIG_FILE.exists():
+        error(f"No configuration found at {CONFIG_FILE}")
+        print("\nRun 'imp config edit' to create a configuration.")
+        return 1
+
+    log(f"Applying configuration from {CONFIG_FILE}")
+    result = subprocess.run(
+        ["/usr/local/bin/configure-router", "--apply-only"],
+        check=False
+    )
+    return result.returncode
+
+
+def cmd_config_edit(args) -> int:
+    """Run interactive configuration."""
+    log("Starting interactive configuration...")
+    result = subprocess.run(
+        ["/usr/local/bin/configure-router"],
+        check=False
+    )
+    return result.returncode
+
+
+def cmd_config_show(args) -> int:
+    """Show current configuration."""
+    if not CONFIG_FILE.exists():
+        error(f"No configuration found at {CONFIG_FILE}")
+        return 1
+
+    import json
+    with open(CONFIG_FILE) as f:
+        config = json.load(f)
+
+    print(json.dumps(config, indent=2))
+    return 0
+
+
+# =============================================================================
+# Shell Commands
+# =============================================================================
+
+def cmd_shell_routing(args) -> int:
+    """Open FRR vtysh shell in dataplane namespace."""
+    # Check if namespace exists
+    ns_path = Path(f"/var/run/netns/{DATAPLANE_NS}")
+    if not ns_path.exists():
+        error(f"Dataplane namespace '{DATAPLANE_NS}' not found")
+        print("\nIs the dataplane running? Check: systemctl status netns-dataplane")
+        return 1
+
+    log("Entering FRR routing shell (vtysh)...")
+    print("Type 'exit' to return\n")
+
+    result = subprocess.run(
+        ["ip", "netns", "exec", DATAPLANE_NS, "vtysh"],
+        check=False
+    )
+    return result.returncode
+
+
+def cmd_shell_core(args) -> int:
+    """Open VPP core instance CLI."""
+    if not Path(VPP_CORE_SOCKET).exists():
+        error(f"VPP core socket not found: {VPP_CORE_SOCKET}")
+        print("\nIs VPP core running? Check: systemctl status vpp-core")
+        return 1
+
+    log("Entering VPP core CLI...")
+    print("Type 'quit' to return\n")
+
+    result = subprocess.run(
+        ["vppctl", "-s", VPP_CORE_SOCKET],
+        check=False
+    )
+    return result.returncode
+
+
+def cmd_shell_nat(args) -> int:
+    """Open VPP NAT instance CLI."""
+    if not Path(VPP_NAT_SOCKET).exists():
+        error(f"VPP NAT socket not found: {VPP_NAT_SOCKET}")
+        print("\nIs VPP NAT running? Check: systemctl status vpp-nat")
+        return 1
+
+    log("Entering VPP NAT CLI...")
+    print("Type 'quit' to return\n")
+
+    result = subprocess.run(
+        ["vppctl", "-s", VPP_NAT_SOCKET],
+        check=False
+    )
+    return result.returncode
+
+
+# =============================================================================
+# Status Command
+# =============================================================================
+
+def cmd_status(args) -> int:
+    """Show status of IMP services."""
+    services = [
+        ("imp-apply-config", "Configuration auto-apply"),
+        ("netns-dataplane", "Dataplane namespace"),
+        ("vpp-core", "VPP core instance"),
+        ("vpp-nat", "VPP NAT instance"),
+        ("frr", "FRR routing"),
+        ("incus", "Incus containers"),
+    ]
+
+    print(f"\n{Colors.BOLD}IMP Service Status{Colors.NC}")
+    print("=" * 50)
+
+    for service, description in services:
+        result = subprocess.run(
+            ["systemctl", "is-active", service],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        status = result.stdout.strip()
+
+        if status == "active":
+            status_color = Colors.GREEN
+            status_icon = "●"
+        elif status == "inactive":
+            status_color = Colors.YELLOW
+            status_icon = "○"
+        else:
+            status_color = Colors.RED
+            status_icon = "✗"
+
+        print(f"  {status_color}{status_icon}{Colors.NC} {description:<30} ({service})")
+
+    print()
+
+    # Show config status
+    if CONFIG_FILE.exists():
+        print(f"  {Colors.GREEN}✓{Colors.NC} Configuration: {CONFIG_FILE}")
+    else:
+        print(f"  {Colors.YELLOW}○{Colors.NC} Configuration: Not configured")
+        print(f"    Run 'imp config edit' to configure")
+
+    print()
+    return 0
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="IMP Router Management CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  imp config apply        Apply saved configuration
+  imp config edit         Interactive configuration wizard
+  imp shell routing       Open FRR/vtysh for BGP/OSPF
+  imp shell core          Open VPP core CLI
+  imp shell nat           Open VPP NAT CLI
+  imp status              Show service status
+"""
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Command")
+
+    # config subcommand
+    config_parser = subparsers.add_parser("config", help="Configuration management")
+    config_sub = config_parser.add_subparsers(dest="config_action")
+
+    config_apply = config_sub.add_parser("apply", help="Apply configuration")
+    config_apply.set_defaults(func=cmd_config_apply)
+
+    config_edit = config_sub.add_parser("edit", help="Edit configuration interactively")
+    config_edit.set_defaults(func=cmd_config_edit)
+
+    config_show = config_sub.add_parser("show", help="Show current configuration")
+    config_show.set_defaults(func=cmd_config_show)
+
+    # shell subcommand
+    shell_parser = subparsers.add_parser("shell", help="Access CLI shells")
+    shell_sub = shell_parser.add_subparsers(dest="shell_type")
+
+    shell_routing = shell_sub.add_parser("routing", help="FRR/vtysh shell", aliases=["frr", "vtysh"])
+    shell_routing.set_defaults(func=cmd_shell_routing)
+
+    shell_core = shell_sub.add_parser("core", help="VPP core CLI", aliases=["vpp"])
+    shell_core.set_defaults(func=cmd_shell_core)
+
+    shell_nat = shell_sub.add_parser("nat", help="VPP NAT CLI")
+    shell_nat.set_defaults(func=cmd_shell_nat)
+
+    # status subcommand
+    status_parser = subparsers.add_parser("status", help="Show service status")
+    status_parser.set_defaults(func=cmd_status)
+
+    # Parse and execute
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return 0
+
+    if args.command == "config" and not getattr(args, "config_action", None):
+        config_parser.print_help()
+        return 0
+
+    if args.command == "shell" and not getattr(args, "shell_type", None):
+        shell_parser.print_help()
+        return 0
+
+    if hasattr(args, "func"):
+        return args.func(args)
+
+    parser.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
