@@ -159,6 +159,50 @@ if [[ -d "${SCRIPT_DIR}/../scripts" ]]; then
 fi
 
 # =============================================================================
+# Boot menu customization (ISOLINUX splash screen)
+# =============================================================================
+log "Customizing boot menu..."
+
+mkdir -p config/bootloaders/isolinux
+
+# Create a simple text-based splash (640x480, PNG format)
+# For a custom image, replace config/bootloaders/isolinux/splash.png
+cat > config/bootloaders/isolinux/menu.cfg << 'MENUEOF'
+menu hshift 0
+menu width 82
+
+menu title IMP Router Installer
+menu background splash.png
+menu color title	* #FFFFFFFF *
+menu color border	* #00000000 #00000000 none
+menu color sel		* #ffffffff #76a1d0ff *
+menu color hotsel	1;7;37;40 #ffffffff #76a1d0ff *
+menu color tabmsg	* #ffffffff #00000000 *
+menu color help		37;40 #ffdddd00 #00000000 none
+menu vshift 12
+menu rows 10
+menu helpmsgrow 15
+menu cmdlinerow 16
+menu timeoutrow 16
+menu tabmsgrow 18
+menu tabmsg Press ENTER to boot or TAB to edit a menu entry
+MENUEOF
+
+# Custom splash image - create a simple one with text
+# This creates a basic 640x480 splash using ImageMagick if available
+# Otherwise falls back to copying the default
+if command -v convert &>/dev/null; then
+    convert -size 640x480 xc:'#1a1a2e' \
+        -font DejaVu-Sans-Bold -pointsize 48 -fill '#eaeaea' \
+        -gravity center -annotate +0-80 'IMP Router' \
+        -font DejaVu-Sans -pointsize 18 -fill '#aaaaaa' \
+        -gravity center -annotate +0-20 'Internet Management Platform' \
+        -font DejaVu-Sans -pointsize 14 -fill '#888888' \
+        -gravity center -annotate +0+40 'ZFS • VPP • FRR • Incus' \
+        config/bootloaders/isolinux/splash.png 2>/dev/null || true
+fi
+
+# =============================================================================
 # MOTD / Welcome message
 # =============================================================================
 mkdir -p config/includes.chroot/etc
