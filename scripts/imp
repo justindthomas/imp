@@ -8,6 +8,12 @@ Usage:
     imp shell routing         Open FRR/vtysh shell (routing protocols)
     imp shell core            Open VPP core instance CLI
     imp shell nat             Open VPP NAT instance CLI
+    imp snapshot list         List all snapshots
+    imp snapshot create       Create a snapshot of current system
+    imp snapshot rollback     Restore from a snapshot (creates new boot environment)
+    imp snapshot delete       Delete a snapshot
+    imp snapshot export       Export snapshot to file (for deployment or backup)
+    imp snapshot import       Import system from file
     imp status                Show service status
 """
 
@@ -15,6 +21,7 @@ import argparse
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -26,6 +33,9 @@ CONFIG_FILE = Path("/persistent/config/router.json")
 VPP_CORE_SOCKET = "/run/vpp/core-cli.sock"
 VPP_NAT_SOCKET = "/run/vpp/nat-cli.sock"
 DATAPLANE_NS = "dataplane"
+ZFS_POOL = "tank"
+ZFS_ROOT = f"{ZFS_POOL}/ROOT"
+ZFS_PERSISTENT = f"{ZFS_POOL}/persistent"
 
 
 # =============================================================================
@@ -206,6 +216,469 @@ def cmd_status(args) -> int:
 
 
 # =============================================================================
+# Snapshot Commands
+# =============================================================================
+
+def get_current_be() -> str:
+    """Get the current boot environment name."""
+    # Find which dataset is mounted at /
+    result = subprocess.run(
+        ["zfs", "list", "-H", "-o", "name,mountpoint"],
+        capture_output=True, text=True, check=True
+    )
+    for line in result.stdout.strip().split('\n'):
+        parts = line.split('\t')
+        if len(parts) == 2 and parts[1] == '/':
+            # Return just the BE name (last component)
+            return parts[0].split('/')[-1]
+    raise RuntimeError("Could not determine current boot environment")
+
+
+def run_zfs(args: list, check: bool = True) -> subprocess.CompletedProcess:
+    """Run a ZFS command."""
+    return subprocess.run(["zfs"] + args, capture_output=True, text=True, check=check)
+
+
+def cmd_snapshot_list(args) -> int:
+    """List all snapshots."""
+    print(f"\n{Colors.BOLD}Boot Environment Snapshots{Colors.NC}")
+    print("=" * 70)
+
+    result = run_zfs(["list", "-t", "snapshot", "-r", ZFS_ROOT, "-o", "name,creation,used,refer", "-s", "creation"], check=False)
+    if result.returncode != 0:
+        error(f"Failed to list snapshots: {result.stderr}")
+        return 1
+
+    if not result.stdout.strip():
+        print("  No snapshots found")
+    else:
+        # Parse and display nicely
+        lines = result.stdout.strip().split('\n')
+        if lines:
+            print(f"  {'NAME':<40} {'CREATED':<20} {'USED':<10} {'REFER':<10}")
+            print("  " + "-" * 66)
+            for line in lines[1:]:  # Skip header
+                parts = line.split()
+                if len(parts) >= 4:
+                    name = parts[0].replace(f"{ZFS_ROOT}/", "")
+                    print(f"  {name:<40} {parts[1]:<20} {parts[2]:<10} {parts[3]:<10}")
+
+    print(f"\n{Colors.BOLD}Persistent Data Snapshots{Colors.NC}")
+    print("=" * 70)
+
+    result = run_zfs(["list", "-t", "snapshot", "-r", ZFS_PERSISTENT, "-o", "name,creation,used,refer", "-s", "creation"], check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        print("  No snapshots found")
+    else:
+        lines = result.stdout.strip().split('\n')
+        if lines:
+            print(f"  {'NAME':<40} {'CREATED':<20} {'USED':<10} {'REFER':<10}")
+            print("  " + "-" * 66)
+            for line in lines[1:]:
+                parts = line.split()
+                if len(parts) >= 4:
+                    name = parts[0].replace(f"{ZFS_PERSISTENT}/", "persistent/")
+                    print(f"  {name:<40} {parts[1]:<20} {parts[2]:<10} {parts[3]:<10}")
+
+    print()
+    return 0
+
+
+def cmd_snapshot_create(args) -> int:
+    """Create a snapshot of current boot environment and persistent data."""
+    # Generate snapshot name
+    if args.name:
+        snap_name = args.name
+    else:
+        snap_name = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    try:
+        current_be = get_current_be()
+    except RuntimeError as e:
+        error(str(e))
+        return 1
+
+    be_snapshot = f"{ZFS_ROOT}/{current_be}@{snap_name}"
+    persistent_snapshot = f"{ZFS_PERSISTENT}@{snap_name}"
+
+    log(f"Creating snapshot '{snap_name}'...")
+
+    # Snapshot boot environment
+    log(f"  Snapshotting boot environment: {current_be}")
+    result = run_zfs(["snapshot", be_snapshot], check=False)
+    if result.returncode != 0:
+        error(f"Failed to snapshot boot environment: {result.stderr}")
+        return 1
+
+    # Snapshot persistent data (recursively for config and data)
+    log(f"  Snapshotting persistent data")
+    result = run_zfs(["snapshot", "-r", persistent_snapshot], check=False)
+    if result.returncode != 0:
+        error(f"Failed to snapshot persistent data: {result.stderr}")
+        # Try to clean up BE snapshot
+        run_zfs(["destroy", be_snapshot], check=False)
+        return 1
+
+    print(f"\n{Colors.GREEN}Snapshot '{snap_name}' created successfully{Colors.NC}")
+    print(f"  Boot environment: {be_snapshot}")
+    print(f"  Persistent data:  {persistent_snapshot}")
+    print()
+    return 0
+
+
+def cmd_snapshot_rollback(args) -> int:
+    """Rollback to a snapshot by cloning to a new boot environment."""
+    snap_name = args.name
+
+    try:
+        current_be = get_current_be()
+    except RuntimeError as e:
+        error(str(e))
+        return 1
+
+    be_snapshot = f"{ZFS_ROOT}/{current_be}@{snap_name}"
+    persistent_snapshot = f"{ZFS_PERSISTENT}@{snap_name}"
+
+    # Verify snapshots exist
+    result = run_zfs(["list", "-t", "snapshot", be_snapshot], check=False)
+    if result.returncode != 0:
+        error(f"Boot environment snapshot not found: {be_snapshot}")
+        return 1
+
+    result = run_zfs(["list", "-t", "snapshot", persistent_snapshot], check=False)
+    if result.returncode != 0:
+        warn(f"Persistent data snapshot not found: {persistent_snapshot}")
+        if not args.force:
+            print("Use --force to rollback without persistent data restore")
+            return 1
+
+    # Generate new BE name
+    new_be_name = f"restored-{snap_name}"
+    new_be = f"{ZFS_ROOT}/{new_be_name}"
+
+    # Check if new BE already exists
+    result = run_zfs(["list", new_be], check=False)
+    if result.returncode == 0:
+        error(f"Boot environment '{new_be_name}' already exists")
+        print("Delete it first or choose a different snapshot")
+        return 1
+
+    print(f"\n{Colors.BOLD}Rollback Plan:{Colors.NC}")
+    print(f"  Source snapshot:    {snap_name}")
+    print(f"  New boot environment: {new_be_name}")
+    print(f"  Current BE '{current_be}' will be preserved")
+    print()
+
+    if not args.yes:
+        response = input("Proceed with rollback? [y/N]: ").strip().lower()
+        if response != 'y':
+            print("Aborted")
+            return 0
+
+    log("Creating new boot environment from snapshot...")
+
+    # Clone BE snapshot to new dataset
+    result = run_zfs(["clone", be_snapshot, new_be], check=False)
+    if result.returncode != 0:
+        error(f"Failed to clone boot environment: {result.stderr}")
+        return 1
+
+    # Set mountpoint
+    result = run_zfs(["set", "mountpoint=/", new_be], check=False)
+    if result.returncode != 0:
+        error(f"Failed to set mountpoint: {result.stderr}")
+        run_zfs(["destroy", new_be], check=False)
+        return 1
+
+    # Rollback persistent data (this is a true rollback, not clone)
+    # Note: This will lose data newer than the snapshot!
+    result = run_zfs(["list", "-t", "snapshot", persistent_snapshot], check=False)
+    if result.returncode == 0:
+        log("Rolling back persistent data...")
+        warn("This will discard changes to persistent data since the snapshot!")
+        if not args.yes:
+            response = input("Rollback persistent data? [y/N]: ").strip().lower()
+            if response == 'y':
+                result = run_zfs(["rollback", "-r", persistent_snapshot], check=False)
+                if result.returncode != 0:
+                    warn(f"Failed to rollback persistent data: {result.stderr}")
+
+    # Set as boot filesystem
+    log("Setting new boot environment as default...")
+    result = subprocess.run(
+        ["zpool", "set", f"bootfs={new_be}", ZFS_POOL],
+        capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        error(f"Failed to set bootfs: {result.stderr}")
+        return 1
+
+    print(f"\n{Colors.GREEN}Rollback complete!{Colors.NC}")
+    print(f"  New boot environment: {new_be_name}")
+    print(f"  Previous environment: {current_be} (preserved)")
+    print(f"\n{Colors.YELLOW}Reboot to activate the restored system.{Colors.NC}")
+    print()
+    return 0
+
+
+def cmd_snapshot_export(args) -> int:
+    """Export a snapshot to a file for backup or deployment."""
+    snap_name = args.name
+
+    try:
+        current_be = get_current_be()
+    except RuntimeError as e:
+        error(str(e))
+        return 1
+
+    be_snapshot = f"{ZFS_ROOT}/{current_be}@{snap_name}"
+    persistent_snapshot = f"{ZFS_PERSISTENT}@{snap_name}"
+
+    # Verify BE snapshot exists
+    result = run_zfs(["list", "-t", "snapshot", be_snapshot], check=False)
+    if result.returncode != 0:
+        error(f"Snapshot not found: {be_snapshot}")
+        return 1
+
+    # Generate output filename
+    if args.output:
+        output_file = Path(args.output)
+    else:
+        hostname = os.uname().nodename
+        suffix = "full" if args.full else "system"
+        output_file = Path(f"{hostname}-{snap_name}-{suffix}.zfs.zst")
+
+    if output_file.exists() and not args.yes:
+        response = input(f"Output file {output_file} exists. Overwrite? [y/N]: ").strip().lower()
+        if response != 'y':
+            print("Aborted")
+            return 0
+
+    log(f"Exporting snapshot '{snap_name}'...")
+
+    if args.full:
+        # Check for persistent snapshot
+        result = run_zfs(["list", "-t", "snapshot", persistent_snapshot], check=False)
+        if result.returncode != 0:
+            error(f"Persistent snapshot not found: {persistent_snapshot}")
+            print("Use without --full to export system only")
+            return 1
+
+        log("  Mode: Full backup (system + persistent data)")
+
+        # Create a combined stream using a temp marker approach
+        # We'll create separate files and note this in the filename
+        be_file = output_file.with_suffix('.system.zfs.zst')
+        persistent_file = output_file.with_suffix('.persistent.zfs.zst')
+
+        log(f"  Exporting boot environment to {be_file}...")
+        result = subprocess.run(
+            f"zfs send {be_snapshot} | zstd -T0 > {be_file}",
+            shell=True, check=False
+        )
+        if result.returncode != 0:
+            error("Failed to export boot environment")
+            return 1
+
+        log(f"  Exporting persistent data to {persistent_file}...")
+        result = subprocess.run(
+            f"zfs send -R {persistent_snapshot} | zstd -T0 > {persistent_file}",
+            shell=True, check=False
+        )
+        if result.returncode != 0:
+            error("Failed to export persistent data")
+            be_file.unlink(missing_ok=True)
+            return 1
+
+        # Get file sizes
+        be_size = be_file.stat().st_size / (1024 * 1024)
+        persistent_size = persistent_file.stat().st_size / (1024 * 1024)
+
+        print(f"\n{Colors.GREEN}Export complete!{Colors.NC}")
+        print(f"  System:     {be_file} ({be_size:.1f} MB)")
+        print(f"  Persistent: {persistent_file} ({persistent_size:.1f} MB)")
+        print(f"\nTo restore on this or another system:")
+        print(f"  imp snapshot import {be_file}")
+        print(f"  imp snapshot import {persistent_file} --persistent")
+
+    else:
+        log("  Mode: System only (for deployment to other routers)")
+        log(f"  Exporting to {output_file}...")
+
+        result = subprocess.run(
+            f"zfs send {be_snapshot} | zstd -T0 > {output_file}",
+            shell=True, check=False
+        )
+        if result.returncode != 0:
+            error("Failed to export snapshot")
+            output_file.unlink(missing_ok=True)
+            return 1
+
+        file_size = output_file.stat().st_size / (1024 * 1024)
+
+        print(f"\n{Colors.GREEN}Export complete!{Colors.NC}")
+        print(f"  File: {output_file} ({file_size:.1f} MB)")
+        print(f"\nTo deploy on another router:")
+        print(f"  imp snapshot import {output_file}")
+
+    print()
+    return 0
+
+
+def cmd_snapshot_import(args) -> int:
+    """Import a snapshot from a file."""
+    input_file = Path(args.file)
+
+    if not input_file.exists():
+        error(f"File not found: {input_file}")
+        return 1
+
+    # Determine if this is a persistent data import
+    if args.persistent:
+        target_base = ZFS_PERSISTENT
+        log(f"Importing persistent data from {input_file}...")
+        warn("This will replace your current persistent data!")
+
+        if not args.yes:
+            response = input("Continue? [y/N]: ").strip().lower()
+            if response != 'y':
+                print("Aborted")
+                return 0
+
+        # For persistent, we do a destructive receive
+        result = subprocess.run(
+            f"zstd -d < {input_file} | zfs receive -F {target_base}",
+            shell=True, check=False
+        )
+        if result.returncode != 0:
+            error("Failed to import persistent data")
+            return 1
+
+        print(f"\n{Colors.GREEN}Persistent data restored!{Colors.NC}")
+        return 0
+
+    # System import - create new boot environment
+    if args.name:
+        new_be_name = args.name
+    else:
+        # Generate name from filename
+        stem = input_file.stem
+        if stem.endswith('.system'):
+            stem = stem[:-7]
+        if stem.endswith('.zfs'):
+            stem = stem[:-4]
+        new_be_name = f"imported-{stem}"
+
+    new_be = f"{ZFS_ROOT}/{new_be_name}"
+
+    # Check if BE already exists
+    result = run_zfs(["list", new_be], check=False)
+    if result.returncode == 0:
+        error(f"Boot environment '{new_be_name}' already exists")
+        print("Use -n/--name to specify a different name")
+        return 1
+
+    log(f"Importing system to boot environment '{new_be_name}'...")
+
+    # Import the stream
+    result = subprocess.run(
+        f"zstd -d < {input_file} | zfs receive {new_be}",
+        shell=True, check=False
+    )
+    if result.returncode != 0:
+        error("Failed to import snapshot")
+        return 1
+
+    # Set mountpoint
+    result = run_zfs(["set", "mountpoint=/", new_be], check=False)
+    if result.returncode != 0:
+        warn(f"Failed to set mountpoint: {result.stderr}")
+
+    print(f"\n{Colors.GREEN}Import complete!{Colors.NC}")
+    print(f"  New boot environment: {new_be_name}")
+    print(f"\nTo boot into this system:")
+    print(f"  zpool set bootfs={new_be} {ZFS_POOL}")
+    print(f"  reboot")
+
+    if not args.yes:
+        response = input(f"\nSet '{new_be_name}' as default boot environment now? [y/N]: ").strip().lower()
+        if response == 'y':
+            result = subprocess.run(
+                ["zpool", "set", f"bootfs={new_be}", ZFS_POOL],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode == 0:
+                print(f"{Colors.GREEN}Done! Reboot to use the imported system.{Colors.NC}")
+            else:
+                error(f"Failed to set bootfs: {result.stderr}")
+
+    print()
+    return 0
+
+
+def cmd_snapshot_delete(args) -> int:
+    """Delete a snapshot."""
+    snap_name = args.name
+
+    try:
+        current_be = get_current_be()
+    except RuntimeError as e:
+        error(str(e))
+        return 1
+
+    be_snapshot = f"{ZFS_ROOT}/{current_be}@{snap_name}"
+    persistent_snapshot = f"{ZFS_PERSISTENT}@{snap_name}"
+
+    deleted = []
+
+    # Delete BE snapshot
+    result = run_zfs(["list", "-t", "snapshot", be_snapshot], check=False)
+    if result.returncode == 0:
+        if not args.yes:
+            response = input(f"Delete {be_snapshot}? [y/N]: ").strip().lower()
+            if response != 'y':
+                print("Skipped")
+            else:
+                result = run_zfs(["destroy", be_snapshot], check=False)
+                if result.returncode == 0:
+                    deleted.append(be_snapshot)
+                else:
+                    error(f"Failed to delete: {result.stderr}")
+        else:
+            result = run_zfs(["destroy", be_snapshot], check=False)
+            if result.returncode == 0:
+                deleted.append(be_snapshot)
+
+    # Delete persistent snapshot (recursively)
+    result = run_zfs(["list", "-t", "snapshot", persistent_snapshot], check=False)
+    if result.returncode == 0:
+        if not args.yes:
+            response = input(f"Delete {persistent_snapshot} (recursive)? [y/N]: ").strip().lower()
+            if response != 'y':
+                print("Skipped")
+            else:
+                result = run_zfs(["destroy", "-r", persistent_snapshot], check=False)
+                if result.returncode == 0:
+                    deleted.append(persistent_snapshot)
+                else:
+                    error(f"Failed to delete: {result.stderr}")
+        else:
+            result = run_zfs(["destroy", "-r", persistent_snapshot], check=False)
+            if result.returncode == 0:
+                deleted.append(persistent_snapshot)
+
+    if deleted:
+        print(f"\n{Colors.GREEN}Deleted:{Colors.NC}")
+        for d in deleted:
+            print(f"  {d}")
+    else:
+        warn("No snapshots found with that name")
+
+    print()
+    return 0
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -215,12 +688,17 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  imp config apply        Apply saved configuration
-  imp config edit         Interactive configuration wizard
-  imp shell routing       Open FRR/vtysh for BGP/OSPF
-  imp shell core          Open VPP core CLI
-  imp shell nat           Open VPP NAT CLI
-  imp status              Show service status
+  imp config apply              Apply saved configuration
+  imp config edit               Interactive configuration wizard
+  imp shell routing             Open FRR/vtysh for BGP/OSPF
+  imp shell core                Open VPP core CLI
+  imp snapshot list             List all snapshots
+  imp snapshot create           Create a snapshot
+  imp snapshot rollback NAME    Restore from snapshot
+  imp snapshot export NAME      Export system to file (for deployment)
+  imp snapshot export NAME --full  Export system + data (for backup)
+  imp snapshot import FILE      Import system from file
+  imp status                    Show service status
 """
     )
 
@@ -256,6 +734,42 @@ Examples:
     status_parser = subparsers.add_parser("status", help="Show service status")
     status_parser.set_defaults(func=cmd_status)
 
+    # snapshot subcommand
+    snapshot_parser = subparsers.add_parser("snapshot", help="Manage ZFS snapshots")
+    snapshot_sub = snapshot_parser.add_subparsers(dest="snapshot_action")
+
+    snapshot_list = snapshot_sub.add_parser("list", help="List all snapshots", aliases=["ls"])
+    snapshot_list.set_defaults(func=cmd_snapshot_list)
+
+    snapshot_create = snapshot_sub.add_parser("create", help="Create a snapshot")
+    snapshot_create.add_argument("name", nargs="?", help="Snapshot name (default: timestamp)")
+    snapshot_create.set_defaults(func=cmd_snapshot_create)
+
+    snapshot_rollback = snapshot_sub.add_parser("rollback", help="Restore from snapshot")
+    snapshot_rollback.add_argument("name", help="Snapshot name to restore")
+    snapshot_rollback.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
+    snapshot_rollback.add_argument("-f", "--force", action="store_true", help="Continue even if persistent snapshot missing")
+    snapshot_rollback.set_defaults(func=cmd_snapshot_rollback)
+
+    snapshot_delete = snapshot_sub.add_parser("delete", help="Delete a snapshot", aliases=["rm"])
+    snapshot_delete.add_argument("name", help="Snapshot name to delete")
+    snapshot_delete.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
+    snapshot_delete.set_defaults(func=cmd_snapshot_delete)
+
+    snapshot_export = snapshot_sub.add_parser("export", help="Export snapshot to file")
+    snapshot_export.add_argument("name", help="Snapshot name to export")
+    snapshot_export.add_argument("-o", "--output", help="Output file (default: auto-generated)")
+    snapshot_export.add_argument("--full", action="store_true", help="Include persistent data (for full backup)")
+    snapshot_export.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
+    snapshot_export.set_defaults(func=cmd_snapshot_export)
+
+    snapshot_import = snapshot_sub.add_parser("import", help="Import snapshot from file")
+    snapshot_import.add_argument("file", help="File to import")
+    snapshot_import.add_argument("-n", "--name", help="Name for new boot environment")
+    snapshot_import.add_argument("--persistent", action="store_true", help="Import as persistent data (replaces current)")
+    snapshot_import.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
+    snapshot_import.set_defaults(func=cmd_snapshot_import)
+
     # Parse and execute
     args = parser.parse_args()
 
@@ -269,6 +783,10 @@ Examples:
 
     if args.command == "shell" and not getattr(args, "shell_type", None):
         shell_parser.print_help()
+        return 0
+
+    if args.command == "snapshot" and not getattr(args, "snapshot_action", None):
+        snapshot_parser.print_help()
         return 0
 
     if hasattr(args, "func"):
