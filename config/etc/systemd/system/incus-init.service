@@ -1,0 +1,12 @@
+[Unit]
+Description=Initialize Incus for IMP
+After=incus.service
+Requires=incus.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/incus-init.sh
+
+[Install]
+WantedBy=multi-user.target

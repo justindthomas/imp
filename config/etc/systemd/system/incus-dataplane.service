@@ -1,10 +1,11 @@
 [Unit]
 Description=Extend Incus Bridge to VPP
-After=vpp-core-config.service incus.service
-Requires=vpp-core-config.service incus.service
+After=vpp-core-config.service incus-init.service
+Requires=vpp-core-config.service incus-init.service
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 ExecStart=/usr/local/bin/incus-networking.sh
 
 [Install]

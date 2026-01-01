@@ -5,6 +5,7 @@ Requires=vpp-core.service
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 ExecStart=/usr/local/bin/vpp-core-config.sh
 
 [Install]

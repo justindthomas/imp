@@ -184,9 +184,34 @@ class ContainerConfig:
     network: str = "10.234.116.0/24"
     gateway: str = "10.234.116.5"
     prefix: int = 24
-    ipv6: Optional[str] = None
+    bridge_ip: str = "10.234.116.1"      # Incus bridge IP
+    dhcp_start: str = "10.234.116.100"   # DHCP range start
+    dhcp_end: str = "10.234.116.254"     # DHCP range end
+    ipv6: Optional[str] = None           # VPP's IPv6 on host-interface
     ipv6_prefix: Optional[int] = None
     ipv6_ra_prefix: Optional[str] = None
+    bridge_ipv6: Optional[str] = None    # Incus bridge IPv6
+
+    @classmethod
+    def from_network(cls, network: str, gateway: str) -> 'ContainerConfig':
+        """Create ContainerConfig with computed values from network."""
+        import ipaddress
+        net = ipaddress.ip_network(network, strict=False)
+        hosts = list(net.hosts())
+
+        # Bridge IP is .1, gateway (VPP) is .5, DHCP is .100-.254
+        bridge_ip = str(hosts[0])       # .1
+        dhcp_start = str(hosts[99])     # .100
+        dhcp_end = str(hosts[-1])       # .254 (or last usable)
+
+        return cls(
+            network=network,
+            gateway=gateway,
+            prefix=net.prefixlen,
+            bridge_ip=bridge_ip,
+            dhcp_start=dhcp_start,
+            dhcp_end=dhcp_end,
+        )
 
 
 @dataclass
@@ -865,6 +890,7 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path)
         ("systemd/management.network.j2", "10-management.network"),
         ("scripts/vpp-core-config.sh.j2", "vpp-core-config.sh"),
         ("scripts/incus-networking.sh.j2", "incus-networking.sh"),
+        ("scripts/incus-init.sh.j2", "incus-init.sh"),
     ]
 
     for template_path, output_name in templates:
@@ -879,7 +905,7 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path)
             fatal(f"Failed to render {template_path}: {e}")
 
     # Make scripts executable
-    for script in ["vpp-core-config.sh", "incus-networking.sh"]:
+    for script in ["vpp-core-config.sh", "incus-networking.sh", "incus-init.sh"]:
         (output_dir / script).chmod(0o755)
 
     log(f"Configuration files generated in {output_dir}")
@@ -902,6 +928,7 @@ def apply_configs(output_dir: Path) -> None:
         ("10-management.network", "/etc/systemd/network/10-management.network"),
         ("vpp-core-config.sh", "/usr/local/bin/vpp-core-config.sh"),
         ("incus-networking.sh", "/usr/local/bin/incus-networking.sh"),
+        ("incus-init.sh", "/usr/local/bin/incus-init.sh"),
     ]
 
     for src, dst in copies:
@@ -935,6 +962,7 @@ def enable_services() -> None:
         "vpp-core-config",
         "vpp-nat",
         "frr",
+        "incus-init",
         "incus-dataplane",
     ]
 
@@ -1076,8 +1104,7 @@ def main() -> None:
             warn("Invalid CIDR")
 
         gw = prompt_ipv4("Container Gateway IP")
-        _, prefix = parse_cidr(net)
-        container = ContainerConfig(network=net, gateway=gw, prefix=prefix)
+        container = ContainerConfig.from_network(net, gw)
 
     bgp = phase5_bgp_config(external)
     nat = phase6_nat_config(internal, container)
