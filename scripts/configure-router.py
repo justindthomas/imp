@@ -215,6 +215,92 @@ class ContainerConfig:
 
 
 @dataclass
+class CPUConfig:
+    """CPU allocation for VPP instances."""
+    total_cores: int = 4
+    # VPP Core instance
+    core_main: int = 1
+    core_workers: str = "2-3"       # corelist format
+    core_worker_count: int = 2
+    # VPP NAT instance
+    nat_main: int = 0               # 0 means no dedicated main core (shares with workers)
+    nat_workers: str = ""           # corelist format (empty if no dedicated workers)
+    nat_worker_count: int = 0
+
+    @classmethod
+    def detect_and_allocate(cls) -> 'CPUConfig':
+        """Detect CPU count and allocate cores optimally."""
+        import os
+        total_cores = os.cpu_count() or 4
+
+        # Allocation strategy:
+        # - Core 0: Reserved for Linux kernel
+        # - Remaining cores split between VPP core and NAT instances
+        #
+        # Minimum: 2 cores - VPP core gets main+worker on core 1, NAT disabled
+        # 4 cores: Core 1 = core main, 2-3 = core workers, NAT uses software threads
+        # 8 cores: Core 1 = core main, 2-5 = core workers, 6 = NAT main, 7 = NAT worker
+        # 16+ cores: Core 1 = core main, 2-9 = core workers, 10 = NAT main, 11-15 = NAT workers
+
+        if total_cores <= 2:
+            # Minimal setup - single core for VPP
+            return cls(
+                total_cores=total_cores,
+                core_main=1,
+                core_workers="",
+                core_worker_count=0,
+                nat_main=0,
+                nat_workers="",
+                nat_worker_count=0,
+            )
+        elif total_cores <= 4:
+            # Small system - VPP core gets most, NAT runs without dedicated cores
+            return cls(
+                total_cores=total_cores,
+                core_main=1,
+                core_workers="2" if total_cores == 3 else "2-3",
+                core_worker_count=1 if total_cores == 3 else 2,
+                nat_main=0,
+                nat_workers="",
+                nat_worker_count=0,
+            )
+        elif total_cores <= 8:
+            # Medium system - split cores between VPP and NAT
+            core_workers_end = total_cores - 3  # Leave 2 for NAT
+            nat_main = core_workers_end + 1
+            nat_worker = nat_main + 1
+            return cls(
+                total_cores=total_cores,
+                core_main=1,
+                core_workers=f"2-{core_workers_end}",
+                core_worker_count=core_workers_end - 1,
+                nat_main=nat_main,
+                nat_workers=str(nat_worker),
+                nat_worker_count=1,
+            )
+        else:
+            # Large system - more workers for both
+            # Give 60% to core, 40% to NAT (excluding core 0)
+            available = total_cores - 1
+            core_count = int(available * 0.6)
+            nat_count = available - core_count
+
+            core_workers_end = core_count  # cores 1 to core_count for VPP core
+            nat_main = core_workers_end + 1
+            nat_workers_end = total_cores - 1
+
+            return cls(
+                total_cores=total_cores,
+                core_main=1,
+                core_workers=f"2-{core_workers_end}",
+                core_worker_count=core_workers_end - 1,
+                nat_main=nat_main,
+                nat_workers=f"{nat_main + 1}-{nat_workers_end}" if nat_workers_end > nat_main + 1 else str(nat_main + 1),
+                nat_worker_count=nat_workers_end - nat_main,
+            )
+
+
+@dataclass
 class RouterConfig:
     """Complete router configuration."""
     hostname: str = "appliance"
@@ -224,6 +310,7 @@ class RouterConfig:
     bgp: BGPConfig = field(default_factory=BGPConfig)
     nat: NATConfig = field(default_factory=NATConfig)
     container: ContainerConfig = field(default_factory=ContainerConfig)
+    cpu: CPUConfig = field(default_factory=CPUConfig)
     vlan_passthrough: list[VLANPassthrough] = field(default_factory=list)
 
 
@@ -877,12 +964,14 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path)
         'bgp': config.bgp,
         'nat': config.nat,
         'container': config.container,
+        'cpu': config.cpu,
         'vlan_passthrough': config.vlan_passthrough,
     }
 
     # Render each template
     templates = [
         ("vpp/startup-core.conf.j2", "startup-core.conf"),
+        ("vpp/startup-nat.conf.j2", "startup-nat.conf"),
         ("vpp/commands-core.txt.j2", "commands-core.txt"),
         ("vpp/commands-nat.txt.j2", "commands-nat.txt"),
         ("frr/frr.conf.j2", "frr.conf"),
@@ -921,6 +1010,7 @@ def apply_configs(output_dir: Path) -> None:
 
     copies = [
         ("startup-core.conf", "/etc/vpp/startup-core.conf"),
+        ("startup-nat.conf", "/etc/vpp/startup-nat.conf"),
         ("commands-core.txt", "/etc/vpp/commands-core.txt"),
         ("commands-nat.txt", "/etc/vpp/commands-nat.txt"),
         ("frr.conf", "/etc/frr/frr.conf"),
@@ -1013,6 +1103,9 @@ def load_config(config_file: Path) -> RouterConfig:
         VLANPassthrough(**v) for v in data.get('vlan_passthrough', [])
     ]
 
+    # Always re-detect CPU allocation for current hardware
+    cpu = CPUConfig.detect_and_allocate()
+
     config = RouterConfig(
         hostname=data.get('hostname', 'appliance'),
         management=ManagementInterface(**data['management']),
@@ -1021,6 +1114,7 @@ def load_config(config_file: Path) -> RouterConfig:
         bgp=BGPConfig(**data['bgp']),
         nat=nat,
         container=ContainerConfig(**data['container']),
+        cpu=cpu,
         vlan_passthrough=vlan_passthrough,
     )
 
@@ -1119,8 +1213,17 @@ def main() -> None:
         bgp=bgp,
         nat=nat,
         container=container,
+        cpu=CPUConfig.detect_and_allocate(),
         vlan_passthrough=vlan_passthrough,
     )
+
+    # Show CPU allocation
+    info(f"CPU allocation ({config.cpu.total_cores} cores detected):")
+    info(f"  VPP Core: main={config.cpu.core_main}, workers={config.cpu.core_workers or 'none'}")
+    if config.cpu.nat_main > 0:
+        info(f"  VPP NAT:  main={config.cpu.nat_main}, workers={config.cpu.nat_workers or 'none'}")
+    else:
+        info(f"  VPP NAT:  using software threads (no dedicated cores)")
 
     if not phase7_confirm(config):
         fatal("Configuration cancelled")

@@ -26,8 +26,10 @@ socksvr {
 }
 
 cpu {
-  main-core 1
-  workers 4
+  main-core {{ cpu.core_main }}
+{% if cpu.core_workers %}
+  corelist-workers {{ cpu.core_workers }}
+{% endif %}
 }
 
 dpdk {
