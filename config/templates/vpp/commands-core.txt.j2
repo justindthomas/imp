@@ -12,6 +12,23 @@ set interface ip address external {{ external.ipv4 }}/{{ external.ipv4_prefix }}
 set interface ip address external {{ external.ipv6 }}/{{ external.ipv6_prefix }}
 {% endif %}
 set interface mtu 1500 external
+{% if external.subinterfaces %}
+
+# External sub-interfaces (L3 VLAN termination)
+{% for sub in external.subinterfaces %}
+create sub-interfaces external {{ sub.vlan_id }}
+set interface state external.{{ sub.vlan_id }} up
+{% if sub.ipv4 %}
+set interface ip address external.{{ sub.vlan_id }} {{ sub.ipv4 }}/{{ sub.ipv4_prefix }}
+{% endif %}
+{% if sub.ipv6 %}
+set interface ip address external.{{ sub.vlan_id }} {{ sub.ipv6 }}/{{ sub.ipv6_prefix }}
+{% endif %}
+{% if sub.create_lcp %}
+lcp create external.{{ sub.vlan_id }} host-if ext-v{{ sub.vlan_id }}
+{% endif %}
+{% endfor %}
+{% endif %}
 
 # Internal interfaces
 {% for iface in internal %}
@@ -22,8 +39,71 @@ set interface ip address {{ iface.vpp_name }} {{ iface.ipv4 }}/{{ iface.ipv4_pre
 set interface ip address {{ iface.vpp_name }} {{ iface.ipv6 }}/{{ iface.ipv6_prefix }}
 {% endif %}
 set interface mtu 1500 {{ iface.vpp_name }}
+{% if iface.subinterfaces %}
+
+# {{ iface.vpp_name }} sub-interfaces (L3 VLAN termination)
+{% for sub in iface.subinterfaces %}
+create sub-interfaces {{ iface.vpp_name }} {{ sub.vlan_id }}
+set interface state {{ iface.vpp_name }}.{{ sub.vlan_id }} up
+{% if sub.ipv4 %}
+set interface ip address {{ iface.vpp_name }}.{{ sub.vlan_id }} {{ sub.ipv4 }}/{{ sub.ipv4_prefix }}
+{% endif %}
+{% if sub.ipv6 %}
+set interface ip address {{ iface.vpp_name }}.{{ sub.vlan_id }} {{ sub.ipv6 }}/{{ sub.ipv6_prefix }}
+{% endif %}
+{% if sub.create_lcp %}
+lcp create {{ iface.vpp_name }}.{{ sub.vlan_id }} host-if {{ iface.vpp_name }}-v{{ sub.vlan_id }}
+{% endif %}
+{% endfor %}
+{% endif %}
 
 {% endfor %}
+{% if loopbacks %}
+# Loopback interfaces
+{% for lo in loopbacks %}
+create loopback interface instance {{ lo.instance }}
+set interface state loop{{ lo.instance }} up
+{% if lo.ipv4 %}
+set interface ip address loop{{ lo.instance }} {{ lo.ipv4 }}/{{ lo.ipv4_prefix }}
+{% endif %}
+{% if lo.ipv6 %}
+set interface ip address loop{{ lo.instance }} {{ lo.ipv6 }}/{{ lo.ipv6_prefix }}
+{% endif %}
+{% if lo.create_lcp %}
+lcp create loop{{ lo.instance }} host-if lo{{ lo.instance }}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if bvi_domains %}
+
+# BVI (Bridge Virtual Interface) domains
+{% for bvi in bvi_domains %}
+# Bridge domain {{ bvi.bridge_id }}: {{ bvi.name }}
+create loopback interface instance {{ bvi.bridge_id }}
+set interface state loop{{ bvi.bridge_id }} up
+create bridge-domain {{ bvi.bridge_id }}
+set interface l2 bridge loop{{ bvi.bridge_id }} {{ bvi.bridge_id }} bvi
+{% for member in bvi.members %}
+{% if member.vlan_id %}
+create sub-interfaces {{ member.interface }} {{ member.vlan_id }}
+set interface state {{ member.interface }}.{{ member.vlan_id }} up
+set interface l2 bridge {{ member.interface }}.{{ member.vlan_id }} {{ bvi.bridge_id }}
+{% else %}
+set interface l2 bridge {{ member.interface }} {{ bvi.bridge_id }}
+{% endif %}
+{% endfor %}
+{% if bvi.ipv4 %}
+set interface ip address loop{{ bvi.bridge_id }} {{ bvi.ipv4 }}/{{ bvi.ipv4_prefix }}
+{% endif %}
+{% if bvi.ipv6 %}
+set interface ip address loop{{ bvi.bridge_id }} {{ bvi.ipv6 }}/{{ bvi.ipv6_prefix }}
+{% endif %}
+{% if bvi.create_lcp %}
+lcp create loop{{ bvi.bridge_id }} host-if bvi{{ bvi.bridge_id }}
+{% endif %}
+{% endfor %}
+{% endif %}
+
 # Memif to NAT instance (internal side)
 create memif socket id 1 filename /run/vpp/memif-nat-int.sock
 create interface memif id 0 socket-id 1 master

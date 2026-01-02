@@ -85,6 +85,49 @@ class InterfaceInfo:
 
 
 @dataclass
+class SubInterface:
+    """A VLAN sub-interface with L3 termination."""
+    vlan_id: int
+    ipv4: Optional[str] = None
+    ipv4_prefix: Optional[int] = None
+    ipv6: Optional[str] = None
+    ipv6_prefix: Optional[int] = None
+    create_lcp: bool = True  # Create linux_cp TAP for FRR visibility
+
+
+@dataclass
+class LoopbackInterface:
+    """A loopback interface for service addresses, router-id, etc."""
+    instance: int  # VPP loopback instance number (creates loopX)
+    name: str  # Friendly name for reference
+    ipv4: Optional[str] = None
+    ipv4_prefix: Optional[int] = None
+    ipv6: Optional[str] = None
+    ipv6_prefix: Optional[int] = None
+    create_lcp: bool = True  # Create linux_cp TAP for FRR visibility
+
+
+@dataclass
+class BridgeDomainMember:
+    """An interface or sub-interface that's a member of a bridge domain."""
+    interface: str  # VPP interface name (e.g., "external", "internal0")
+    vlan_id: Optional[int] = None  # If set, uses/creates a sub-interface
+
+
+@dataclass
+class BVIConfig:
+    """Bridge domain with BVI (like a switch VLAN interface / SVI)."""
+    bridge_id: int  # Bridge domain ID (also used as loopback instance)
+    name: str  # Friendly name (e.g., "vlan100", "customer-lan")
+    members: list[BridgeDomainMember] = field(default_factory=list)
+    ipv4: Optional[str] = None
+    ipv4_prefix: Optional[int] = None
+    ipv6: Optional[str] = None
+    ipv6_prefix: Optional[int] = None
+    create_lcp: bool = True  # Create linux_cp TAP for FRR visibility
+
+
+@dataclass
 class ExternalInterface:
     """External (WAN) interface configuration."""
     iface: str
@@ -95,6 +138,7 @@ class ExternalInterface:
     ipv6: Optional[str] = None
     ipv6_prefix: Optional[int] = None
     ipv6_gateway: Optional[str] = None
+    subinterfaces: list[SubInterface] = field(default_factory=list)
 
 
 @dataclass
@@ -110,6 +154,7 @@ class InternalInterface:
     ipv6_prefix: Optional[int] = None
     ipv6_network: Optional[str] = None  # Computed: network for BGP announcement
     ipv6_ra_prefix: Optional[str] = None  # Computed: RA prefix (typically /64)
+    subinterfaces: list[SubInterface] = field(default_factory=list)
 
     def __post_init__(self):
         # Compute network address from IP
@@ -312,6 +357,8 @@ class RouterConfig:
     container: ContainerConfig = field(default_factory=ContainerConfig)
     cpu: CPUConfig = field(default_factory=CPUConfig)
     vlan_passthrough: list[VLANPassthrough] = field(default_factory=list)
+    loopbacks: list[LoopbackInterface] = field(default_factory=list)
+    bvi_domains: list[BVIConfig] = field(default_factory=list)
 
 
 # =============================================================================
@@ -636,6 +683,9 @@ def phase3_ip_config(external_iface: InterfaceInfo, internal_ifaces: list[Interf
     if ipv6:
         ipv6_gateway = prompt_ipv6("IPv6 Gateway")
 
+    # Sub-interfaces for external
+    external_subifs = configure_subinterfaces(external_iface.name, "external")
+
     external = ExternalInterface(
         iface=external_iface.name,
         pci=external_iface.pci,
@@ -644,7 +694,8 @@ def phase3_ip_config(external_iface: InterfaceInfo, internal_ifaces: list[Interf
         ipv4_gateway=gateway,
         ipv6=ipv6,
         ipv6_prefix=ipv6_prefix,
-        ipv6_gateway=ipv6_gateway
+        ipv6_gateway=ipv6_gateway,
+        subinterfaces=external_subifs
     )
 
     # Internal interfaces
@@ -655,14 +706,20 @@ def phase3_ip_config(external_iface: InterfaceInfo, internal_ifaces: list[Interf
         ipv4, prefix = prompt_ipv4_cidr("IPv4 Address")
         ipv6, ipv6_prefix = prompt_ipv6_cidr("IPv6 Address")
 
+        vpp_name = f"internal{i}"
+
+        # Sub-interfaces for this internal interface
+        internal_subifs = configure_subinterfaces(iface.name, vpp_name)
+
         internal.append(InternalInterface(
             iface=iface.name,
             pci=iface.pci,
-            vpp_name=f"internal{i}",
+            vpp_name=vpp_name,
             ipv4=ipv4,
             ipv4_prefix=prefix,
             ipv6=ipv6,
-            ipv6_prefix=ipv6_prefix
+            ipv6_prefix=ipv6_prefix,
+            subinterfaces=internal_subifs
         ))
 
     return external, internal
@@ -722,19 +779,21 @@ def phase5_bgp_config(external: ExternalInterface) -> BGPConfig:
     )
 
 
-def phase6_nat_config(internal: list[InternalInterface], container: ContainerConfig) -> NATConfig:
+def phase6_nat_config(internal: list[InternalInterface], container: ContainerConfig, bgp: BGPConfig) -> NATConfig:
     """Phase 6: Configure NAT."""
     log("Phase 6: NAT Configuration")
 
-    # BGP prefix for announcement
+    # NAT pool prefix
     print()
-    print(f"  {Colors.BOLD}BGP NAT Prefix{Colors.NC}")
-    print("  This is the prefix announced via BGP for NAT (e.g., 23.177.24.96/29).")
-    print("  It can be larger than the actual det44 pools.")
+    print(f"  {Colors.BOLD}NAT Pool Prefix{Colors.NC}")
+    print("  This prefix covers your public NAT pool addresses (e.g., 23.177.24.96/29).")
+    print("  It's used for routing and can be larger than individual det44 pools.")
+    if bgp.enabled:
+        print("  This prefix will also be announced via BGP.")
     print()
     while True:
-        bgp_prefix = input("  BGP NAT prefix [CIDR]: ").strip()
-        if validate_ipv4_cidr(bgp_prefix):
+        nat_prefix = input("  NAT pool prefix [CIDR]: ").strip()
+        if validate_ipv4_cidr(nat_prefix):
             break
         warn("Invalid IPv4 CIDR format")
 
@@ -742,7 +801,7 @@ def phase6_nat_config(internal: list[InternalInterface], container: ContainerCon
     print()
     print(f"  {Colors.BOLD}NAT Pool Mappings{Colors.NC}")
     print("  Define det44 mappings: which internal networks map to which NAT pools.")
-    print("  The NAT pools should be subsets of the BGP prefix.")
+    print("  The NAT pools should be subsets of the prefix above.")
     print("  Example: 192.168.20.0/24 -> 23.177.24.96/30")
     print()
 
@@ -796,7 +855,7 @@ def phase6_nat_config(internal: list[InternalInterface], container: ContainerCon
             if not prompt_yes_no("Add another bypass rule?", default=False):
                 break
 
-    return NATConfig(bgp_prefix=bgp_prefix, mappings=mappings, bypass_pairs=bypass_pairs)
+    return NATConfig(bgp_prefix=nat_prefix, mappings=mappings, bypass_pairs=bypass_pairs)
 
 
 def phase_vlan_passthrough(internal: list[InternalInterface]) -> list[VLANPassthrough]:
@@ -871,6 +930,259 @@ def phase_vlan_passthrough(internal: list[InternalInterface]) -> list[VLANPassth
     return vlans
 
 
+def configure_subinterfaces(interface_name: str, vpp_name: str) -> list[SubInterface]:
+    """Configure VLAN sub-interfaces (L3 terminated) for an interface."""
+    print()
+    print(f"  {Colors.BOLD}VLAN Sub-interfaces for {interface_name}{Colors.NC}")
+    print("  Sub-interfaces allow you to assign IPs to VLANs on this interface.")
+    print("  (This is L3 termination, not L2 passthrough)")
+    print()
+
+    if not prompt_yes_no(f"Add VLAN sub-interfaces to {interface_name}?", default=False):
+        return []
+
+    subinterfaces = []
+    while True:
+        print()
+        vlan_id = prompt_int("  VLAN ID", min_val=1, max_val=4094)
+
+        # Check for duplicate VLAN ID
+        if any(s.vlan_id == vlan_id for s in subinterfaces):
+            warn(f"VLAN {vlan_id} already configured on this interface")
+            continue
+
+        # IPv4 configuration (optional)
+        print(f"\n  IPv4 for {vpp_name}.{vlan_id}:")
+        ipv4_input = input("    IPv4 Address [CIDR, optional]: ").strip()
+        ipv4, ipv4_prefix = None, None
+        if ipv4_input:
+            if validate_ipv4_cidr(ipv4_input):
+                ipv4, ipv4_prefix = parse_cidr(ipv4_input)
+            else:
+                warn("Invalid IPv4 CIDR, skipping")
+
+        # IPv6 configuration (optional)
+        ipv6, ipv6_prefix = prompt_ipv6_cidr(f"IPv6 for {vpp_name}.{vlan_id}")
+
+        # At least one IP is required
+        if not ipv4 and not ipv6:
+            warn("At least one IP address is required for a sub-interface")
+            continue
+
+        # LCP (TAP for FRR visibility)
+        create_lcp = prompt_yes_no("Create linux_cp TAP for FRR visibility?", default=True)
+
+        subinterfaces.append(SubInterface(
+            vlan_id=vlan_id,
+            ipv4=ipv4,
+            ipv4_prefix=ipv4_prefix,
+            ipv6=ipv6,
+            ipv6_prefix=ipv6_prefix,
+            create_lcp=create_lcp
+        ))
+
+        info(f"Added sub-interface: {vpp_name}.{vlan_id}")
+        if ipv4:
+            print(f"    IPv4: {ipv4}/{ipv4_prefix}")
+        if ipv6:
+            print(f"    IPv6: {ipv6}/{ipv6_prefix}")
+
+        if not prompt_yes_no("Add another sub-interface?", default=False):
+            break
+
+    return subinterfaces
+
+
+def phase_loopback_config() -> list[LoopbackInterface]:
+    """Configure loopback interfaces."""
+    log("Loopback Interface Configuration (Optional)")
+
+    print()
+    print("  Loopback interfaces are virtual interfaces useful for:")
+    print("  - Router ID (stable address for BGP/OSPF)")
+    print("  - Service addresses (DNS, management)")
+    print("  - Anycast addresses")
+    print()
+
+    if not prompt_yes_no("Configure loopback interfaces?", default=False):
+        return []
+
+    loopbacks = []
+    instance = 0  # VPP loopback instance counter
+
+    while True:
+        print()
+        print(f"  {Colors.BOLD}Loopback interface #{instance}{Colors.NC}")
+
+        # Friendly name
+        name = prompt_string(f"  Name for loop{instance} (e.g., 'router-id', 'services')")
+
+        # IPv4 configuration (optional)
+        print(f"\n  IPv4 for loop{instance}:")
+        ipv4_input = input("    IPv4 Address [CIDR, optional]: ").strip()
+        ipv4, ipv4_prefix = None, None
+        if ipv4_input:
+            if validate_ipv4_cidr(ipv4_input):
+                ipv4, ipv4_prefix = parse_cidr(ipv4_input)
+            else:
+                warn("Invalid IPv4 CIDR, skipping")
+
+        # IPv6 configuration (optional)
+        ipv6, ipv6_prefix = prompt_ipv6_cidr(f"IPv6 for loop{instance}")
+
+        # At least one IP is required
+        if not ipv4 and not ipv6:
+            warn("At least one IP address is required for a loopback")
+            continue
+
+        # LCP (TAP for FRR visibility)
+        create_lcp = prompt_yes_no("Create linux_cp TAP for FRR visibility?", default=True)
+
+        loopbacks.append(LoopbackInterface(
+            instance=instance,
+            name=name,
+            ipv4=ipv4,
+            ipv4_prefix=ipv4_prefix,
+            ipv6=ipv6,
+            ipv6_prefix=ipv6_prefix,
+            create_lcp=create_lcp
+        ))
+
+        info(f"Added loopback: loop{instance} ({name})")
+        if ipv4:
+            print(f"    IPv4: {ipv4}/{ipv4_prefix}")
+        if ipv6:
+            print(f"    IPv6: {ipv6}/{ipv6_prefix}")
+
+        instance += 1
+
+        if not prompt_yes_no("Add another loopback interface?", default=False):
+            break
+
+    return loopbacks
+
+
+def phase_bvi_config(internal: list[InternalInterface]) -> list[BVIConfig]:
+    """Configure BVI (Bridge Virtual Interface) domains - switch-like VLAN interfaces."""
+    log("BVI Configuration (Optional)")
+
+    print()
+    print("  BVI (Bridge Virtual Interface) creates switch-like VLAN interfaces:")
+    print("  - Multiple ports/VLANs are bridged together at L2")
+    print("  - A single L3 gateway (the BVI) serves all members")
+    print("  - Similar to 'interface vlan X' on a traditional switch")
+    print()
+
+    if not prompt_yes_no("Configure BVI domains?", default=False):
+        return []
+
+    # Build list of available interfaces for bridge membership
+    available_interfaces = ["external"] + [iface.vpp_name for iface in internal]
+
+    bvi_domains = []
+    bridge_id = 100  # Start bridge domain IDs at 100 to avoid conflicts
+
+    while True:
+        print()
+        print(f"  {Colors.BOLD}Bridge Domain {bridge_id}{Colors.NC}")
+
+        # Friendly name
+        name = prompt_string(f"  Name for this BVI (e.g., 'customer-lan', 'vlan100')")
+
+        # Collect bridge domain members
+        print()
+        print("  Add interfaces/VLANs to this bridge domain:")
+        print("  (These will be L2-switched together)")
+
+        members = []
+        while True:
+            print()
+            print(f"  Available interfaces: {', '.join(available_interfaces)}")
+            iface_name = prompt_string("  Interface name (or 'done' to finish)")
+
+            if iface_name.lower() == 'done':
+                if not members:
+                    warn("At least one member is required")
+                    continue
+                break
+
+            if iface_name not in available_interfaces:
+                warn(f"Unknown interface: {iface_name}")
+                continue
+
+            # Ask for VLAN ID (optional - if not set, uses the interface directly)
+            vlan_input = input("    VLAN ID (optional, press Enter for untagged): ").strip()
+            vlan_id = None
+            if vlan_input:
+                try:
+                    vlan_id = int(vlan_input)
+                    if not 1 <= vlan_id <= 4094:
+                        warn("VLAN ID must be 1-4094")
+                        continue
+                except ValueError:
+                    warn("Invalid VLAN ID")
+                    continue
+
+            members.append(BridgeDomainMember(interface=iface_name, vlan_id=vlan_id))
+
+            if vlan_id:
+                info(f"Added: {iface_name}.{vlan_id}")
+            else:
+                info(f"Added: {iface_name} (untagged)")
+
+        # BVI IP configuration
+        print()
+        print(f"  {Colors.BOLD}BVI IP Configuration{Colors.NC}")
+        print("  The BVI is the L3 gateway for this bridge domain.")
+
+        # IPv4 (optional)
+        print()
+        ipv4_input = input("    IPv4 Address [CIDR, optional]: ").strip()
+        ipv4, ipv4_prefix = None, None
+        if ipv4_input:
+            if validate_ipv4_cidr(ipv4_input):
+                ipv4, ipv4_prefix = parse_cidr(ipv4_input)
+            else:
+                warn("Invalid IPv4 CIDR, skipping")
+
+        # IPv6 (optional)
+        ipv6, ipv6_prefix = prompt_ipv6_cidr("IPv6 Address")
+
+        # At least one IP is required
+        if not ipv4 and not ipv6:
+            warn("At least one IP address is required for the BVI")
+            continue
+
+        # LCP (TAP for FRR visibility)
+        create_lcp = prompt_yes_no("Create linux_cp TAP for FRR visibility?", default=True)
+
+        bvi_domains.append(BVIConfig(
+            bridge_id=bridge_id,
+            name=name,
+            members=members,
+            ipv4=ipv4,
+            ipv4_prefix=ipv4_prefix,
+            ipv6=ipv6,
+            ipv6_prefix=ipv6_prefix,
+            create_lcp=create_lcp
+        ))
+
+        # Show summary
+        info(f"Added BVI: loop{bridge_id} ({name})")
+        print(f"    Members: {', '.join(m.interface + (f'.{m.vlan_id}' if m.vlan_id else '') for m in members)}")
+        if ipv4:
+            print(f"    IPv4: {ipv4}/{ipv4_prefix}")
+        if ipv6:
+            print(f"    IPv6: {ipv6}/{ipv6_prefix}")
+
+        bridge_id += 1
+
+        if not prompt_yes_no("Add another BVI domain?", default=False):
+            break
+
+    return bvi_domains
+
+
 def phase7_confirm(config: RouterConfig) -> bool:
     """Phase 7: Show summary and confirm."""
     log("Phase 7: Configuration Summary")
@@ -885,10 +1197,26 @@ def phase7_confirm(config: RouterConfig) -> bool:
     print(f"  External:   {config.external.iface} -> {config.external.ipv4}/{config.external.ipv4_prefix}")
     if config.external.ipv6:
         print(f"              {config.external.ipv6}/{config.external.ipv6_prefix}")
+    for sub in config.external.subinterfaces:
+        sub_ips = []
+        if sub.ipv4:
+            sub_ips.append(f"{sub.ipv4}/{sub.ipv4_prefix}")
+        if sub.ipv6:
+            sub_ips.append(f"{sub.ipv6}/{sub.ipv6_prefix}")
+        lcp_note = " (LCP)" if sub.create_lcp else ""
+        print(f"    .{sub.vlan_id}: {', '.join(sub_ips)}{lcp_note}")
     for iface in config.internal:
         print(f"  Internal:   {iface.iface} -> {iface.ipv4}/{iface.ipv4_prefix}")
         if iface.ipv6:
             print(f"              {iface.ipv6}/{iface.ipv6_prefix}")
+        for sub in iface.subinterfaces:
+            sub_ips = []
+            if sub.ipv4:
+                sub_ips.append(f"{sub.ipv4}/{sub.ipv4_prefix}")
+            if sub.ipv6:
+                sub_ips.append(f"{sub.ipv6}/{sub.ipv6_prefix}")
+            lcp_note = " (LCP)" if sub.create_lcp else ""
+            print(f"    .{sub.vlan_id}: {', '.join(sub_ips)}{lcp_note}")
 
     print()
     print("ROUTING:")
@@ -928,6 +1256,35 @@ def phase7_confirm(config: RouterConfig) -> bool:
             else:
                 print(f"  VLAN {v.vlan_id} (802.1Q) <-> {v.internal_interface}")
 
+    if config.loopbacks:
+        print()
+        print("LOOPBACK INTERFACES:")
+        for lo in config.loopbacks:
+            lo_ips = []
+            if lo.ipv4:
+                lo_ips.append(f"{lo.ipv4}/{lo.ipv4_prefix}")
+            if lo.ipv6:
+                lo_ips.append(f"{lo.ipv6}/{lo.ipv6_prefix}")
+            lcp_note = " (LCP)" if lo.create_lcp else ""
+            print(f"  loop{lo.instance} ({lo.name}): {', '.join(lo_ips)}{lcp_note}")
+
+    if config.bvi_domains:
+        print()
+        print("BVI DOMAINS (L2 bridge + L3 gateway):")
+        for bvi in config.bvi_domains:
+            bvi_ips = []
+            if bvi.ipv4:
+                bvi_ips.append(f"{bvi.ipv4}/{bvi.ipv4_prefix}")
+            if bvi.ipv6:
+                bvi_ips.append(f"{bvi.ipv6}/{bvi.ipv6_prefix}")
+            lcp_note = " (LCP)" if bvi.create_lcp else ""
+            members_str = ", ".join(
+                f"{m.interface}.{m.vlan_id}" if m.vlan_id else m.interface
+                for m in bvi.members
+            )
+            print(f"  loop{bvi.bridge_id} ({bvi.name}): {', '.join(bvi_ips)}{lcp_note}")
+            print(f"    Members: {members_str}")
+
     print()
     print("=" * 50)
     print()
@@ -966,6 +1323,8 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path)
         'container': config.container,
         'cpu': config.cpu,
         'vlan_passthrough': config.vlan_passthrough,
+        'loopbacks': config.loopbacks,
+        'bvi_domains': config.bvi_domains,
     }
 
     # Render each template
@@ -1103,19 +1462,71 @@ def load_config(config_file: Path) -> RouterConfig:
         VLANPassthrough(**v) for v in data.get('vlan_passthrough', [])
     ]
 
+    # Handle loopback interfaces
+    loopbacks = [
+        LoopbackInterface(**lo) for lo in data.get('loopbacks', [])
+    ]
+
+    # Handle BVI domains
+    bvi_domains = []
+    for bvi_data in data.get('bvi_domains', []):
+        members = [BridgeDomainMember(**m) for m in bvi_data.get('members', [])]
+        bvi_domains.append(BVIConfig(
+            bridge_id=bvi_data['bridge_id'],
+            name=bvi_data['name'],
+            members=members,
+            ipv4=bvi_data.get('ipv4'),
+            ipv4_prefix=bvi_data.get('ipv4_prefix'),
+            ipv6=bvi_data.get('ipv6'),
+            ipv6_prefix=bvi_data.get('ipv6_prefix'),
+            create_lcp=bvi_data.get('create_lcp', True)
+        ))
+
     # Always re-detect CPU allocation for current hardware
     cpu = CPUConfig.detect_and_allocate()
+
+    # Reconstruct external interface with subinterfaces
+    ext_data = data['external']
+    ext_subifs = [SubInterface(**s) for s in ext_data.get('subinterfaces', [])]
+    external = ExternalInterface(
+        iface=ext_data['iface'],
+        pci=ext_data['pci'],
+        ipv4=ext_data['ipv4'],
+        ipv4_prefix=ext_data['ipv4_prefix'],
+        ipv4_gateway=ext_data['ipv4_gateway'],
+        ipv6=ext_data.get('ipv6'),
+        ipv6_prefix=ext_data.get('ipv6_prefix'),
+        ipv6_gateway=ext_data.get('ipv6_gateway'),
+        subinterfaces=ext_subifs
+    )
+
+    # Reconstruct internal interfaces with subinterfaces
+    internal = []
+    for i_data in data['internal']:
+        int_subifs = [SubInterface(**s) for s in i_data.get('subinterfaces', [])]
+        internal.append(InternalInterface(
+            iface=i_data['iface'],
+            pci=i_data['pci'],
+            vpp_name=i_data['vpp_name'],
+            ipv4=i_data['ipv4'],
+            ipv4_prefix=i_data['ipv4_prefix'],
+            ipv6=i_data.get('ipv6'),
+            ipv6_prefix=i_data.get('ipv6_prefix'),
+            subinterfaces=int_subifs
+        ))
 
     config = RouterConfig(
         hostname=data.get('hostname', 'appliance'),
         management=ManagementInterface(**data['management']),
-        external=ExternalInterface(**data['external']),
-        internal=[InternalInterface(**i) for i in data['internal']],
+        external=external,
+        internal=internal,
         bgp=BGPConfig(**data['bgp']),
         nat=nat,
         container=ContainerConfig(**data['container']),
         cpu=cpu,
         vlan_passthrough=vlan_passthrough,
+        loopbacks=loopbacks,
+        bvi_domains=bvi_domains,
     )
 
     return config
@@ -1201,8 +1612,10 @@ def main() -> None:
         container = ContainerConfig.from_network(net, gw)
 
     bgp = phase5_bgp_config(external)
-    nat = phase6_nat_config(internal, container)
+    nat = phase6_nat_config(internal, container, bgp)
     vlan_passthrough = phase_vlan_passthrough(internal)
+    loopbacks = phase_loopback_config()
+    bvi_domains = phase_bvi_config(internal)
 
     # Build config object
     config = RouterConfig(
@@ -1215,6 +1628,8 @@ def main() -> None:
         container=container,
         cpu=CPUConfig.detect_and_allocate(),
         vlan_passthrough=vlan_passthrough,
+        loopbacks=loopbacks,
+        bvi_domains=bvi_domains,
     )
 
     # Show CPU allocation
