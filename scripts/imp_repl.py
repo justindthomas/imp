@@ -121,71 +121,94 @@ class MenuCompleter(Completer):
         self.menus = menus
 
     def get_completions(self, document, complete_event):
-        text = document.text_before_cursor.lower()
+        text = document.text_before_cursor
         words = text.split()
 
-        # Get available completions
-        completions = self._get_menu_completions()
+        # Determine what we're completing
+        if not words:
+            # Empty input - show current menu completions
+            completions = self._get_menu_completions([])
+            word = ""
+        elif text.endswith(' '):
+            # User typed a word and space - complete subcommands
+            completions = self._get_menu_completions(words)
+            word = ""
+        else:
+            # User is typing a word - complete from parent context
+            completions = self._get_menu_completions(words[:-1])
+            word = words[-1].lower()
 
-        # Filter based on current input
-        word = words[-1] if words else ""
+        # Yield matching completions
         for item in completions:
             if item.lower().startswith(word):
                 yield Completion(item, start_position=-len(word))
 
-    def _get_current_menu(self):
-        """Navigate to the current menu based on path."""
+    def _get_menu_at_path(self, path: list[str]):
+        """Navigate to a menu based on path segments."""
         menu = self.menus.get("root")
-        for segment in self.ctx.path:
+        for segment in path:
             if menu and "children" in menu:
                 menu = menu["children"].get(segment)
             else:
                 return None
         return menu
 
-    def _get_menu_completions(self) -> list[str]:
-        """Get available commands and submenus for current context."""
+    def _get_menu_completions(self, cmd_prefix: list[str]) -> list[str]:
+        """Get available commands and submenus for given context.
+
+        Args:
+            cmd_prefix: Additional path segments typed on command line
+        """
         completions = []
 
-        # Global commands
-        completions.extend(["help", "back", "home", "show", "status", "apply", "save", "reload", "exit"])
+        # Build effective path: current menu path + typed command prefix
+        effective_path = self.ctx.path + cmd_prefix
 
-        menu = self._get_current_menu()
-        path = self.ctx.path
+        # Navigate to the menu at this effective path
+        menu = self._get_menu_at_path(effective_path)
 
-        # Menu-specific commands from static menu definition
-        if menu and "commands" in menu:
-            completions.extend(menu["commands"])
+        # If we couldn't navigate there, no completions
+        if menu is None and cmd_prefix:
+            return []
 
-        # Child menus from static menu definition
-        if menu and "children" in menu:
-            completions.extend(menu["children"].keys())
+        # Only show global commands at the current menu level (not when completing subcommands)
+        if not cmd_prefix:
+            completions.extend(["help", "back", "home", "show", "status", "apply", "save", "reload", "exit"])
 
-        # Dynamic completions based on context
-        if path == ["interfaces", "internal"] and self.ctx.config:
+        if menu:
+            # Menu-specific commands from static menu definition
+            if "commands" in menu:
+                completions.extend(menu["commands"])
+
+            # Child menus from static menu definition
+            if "children" in menu:
+                completions.extend(menu["children"].keys())
+
+        # Dynamic completions based on effective path
+        if effective_path == ["interfaces", "internal"] and self.ctx.config:
             # Add internal interface names
             completions.extend(i.vpp_name for i in self.ctx.config.internal)
 
-        if len(path) == 3 and path[:2] == ["interfaces", "internal"]:
+        if len(effective_path) == 3 and effective_path[:2] == ["interfaces", "internal"]:
             # Add subinterfaces submenu for internal interfaces
             completions.append("subinterfaces")
             completions.extend(["show"])
 
-        if len(path) >= 3 and path[-1] == "subinterfaces":
+        if len(effective_path) >= 3 and effective_path[-1] == "subinterfaces":
             # Add sub-interface commands
             completions.extend(["list", "add", "delete"])
 
-        if path == ["loopbacks"] and self.ctx.config:
+        if effective_path == ["loopbacks"] and self.ctx.config:
             # Add loopback instance numbers for delete completion
             for lo in self.ctx.config.loopbacks:
                 completions.append(str(lo.instance))
 
-        if path == ["bvi"] and self.ctx.config:
+        if effective_path == ["bvi"] and self.ctx.config:
             # Add BVI bridge IDs for delete completion
             for bvi in self.ctx.config.bvi_domains:
                 completions.append(str(bvi.bridge_id))
 
-        if path == ["vlan-passthrough"] and self.ctx.config:
+        if effective_path == ["vlan-passthrough"] and self.ctx.config:
             # Add VLAN IDs for delete completion
             for v in self.ctx.config.vlan_passthrough:
                 completions.append(str(v.vlan_id))
@@ -253,6 +276,9 @@ def build_menu_tree() -> dict:
                         "nat": {"commands": []},
                     },
                     "commands": [],
+                },
+                "snapshot": {
+                    "commands": ["list", "create", "delete", "export", "import", "rollback"],
                 },
             },
             "commands": ["show", "status"],
@@ -778,12 +804,14 @@ def cmd_apply(ctx: MenuContext, args: list[str]) -> None:
         response = input("Restart services now? [y/N]: ").strip().lower()
         if response == 'y':
             log("Restarting services...")
+            # Order matters: vpp-core must be up before vpp-core-config, vpp-nat, and frr
             subprocess.run(["systemctl", "restart", "vpp-core"], check=False)
+            subprocess.run(["systemctl", "restart", "vpp-core-config"], check=False)
             subprocess.run(["systemctl", "restart", "vpp-nat"], check=False)
             subprocess.run(["systemctl", "restart", "frr"], check=False)
             log("Services restarted")
         else:
-            print("Run 'systemctl restart vpp-core vpp-nat frr' to apply changes")
+            print("Run 'systemctl restart vpp-core vpp-core-config vpp-nat frr' to apply changes")
 
     except Exception as e:
         error(f"Failed to apply: {e}")
@@ -1623,6 +1651,84 @@ def cmd_shell_nat(ctx: MenuContext, args: list[str]) -> None:
 
 
 # =============================================================================
+# Snapshot Commands
+# =============================================================================
+
+def cmd_snapshot_list(ctx: MenuContext, args: list[str]) -> None:
+    """List all snapshots."""
+    subprocess.run(["imp", "snapshot", "list"], check=False)
+
+
+def cmd_snapshot_create(ctx: MenuContext, args: list[str]) -> None:
+    """Create a snapshot."""
+    cmd = ["imp", "snapshot", "create"]
+    if args:
+        cmd.append(args[0])  # Optional snapshot name
+    subprocess.run(cmd, check=False)
+
+
+def cmd_snapshot_delete(ctx: MenuContext, args: list[str]) -> None:
+    """Delete a snapshot."""
+    if not args:
+        error("Usage: delete <name>")
+        print("  Use 'snapshot list' to see available snapshots")
+        return
+    subprocess.run(["imp", "snapshot", "delete", args[0]], check=False)
+
+
+def cmd_snapshot_export(ctx: MenuContext, args: list[str]) -> None:
+    """Export a snapshot to file."""
+    if not args:
+        error("Usage: export <name> [--full] [-o output]")
+        print("  Use 'snapshot list' to see available snapshots")
+        return
+
+    cmd = ["imp", "snapshot", "export", args[0]]
+
+    # Parse remaining args for --full and -o
+    i = 1
+    while i < len(args):
+        if args[i] == "--full":
+            cmd.append("--full")
+        elif args[i] in ("-o", "--output") and i + 1 < len(args):
+            cmd.extend(["-o", args[i + 1]])
+            i += 1
+        i += 1
+
+    subprocess.run(cmd, check=False)
+
+
+def cmd_snapshot_import(ctx: MenuContext, args: list[str]) -> None:
+    """Import a snapshot from file."""
+    if not args:
+        error("Usage: import <file> [-n name] [--persistent]")
+        return
+
+    cmd = ["imp", "snapshot", "import", args[0]]
+
+    # Parse remaining args
+    i = 1
+    while i < len(args):
+        if args[i] == "--persistent":
+            cmd.append("--persistent")
+        elif args[i] in ("-n", "--name") and i + 1 < len(args):
+            cmd.extend(["-n", args[i + 1]])
+            i += 1
+        i += 1
+
+    subprocess.run(cmd, check=False)
+
+
+def cmd_snapshot_rollback(ctx: MenuContext, args: list[str]) -> None:
+    """Rollback to a snapshot."""
+    if not args:
+        error("Usage: rollback <name>")
+        print("  Use 'snapshot list' to see available snapshots")
+        return
+    subprocess.run(["imp", "snapshot", "rollback", args[0]], check=False)
+
+
+# =============================================================================
 # Command Dispatcher
 # =============================================================================
 
@@ -1680,16 +1786,145 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
     # Path-specific commands
     path = ctx.path
 
-    # Shell commands
-    if path == ["shell", "routing"] or (path == ["shell"] and command == "routing"):
-        cmd_shell_routing(ctx, args)
-        return True
-    if path == ["shell", "core"] or (path == ["shell"] and command == "core"):
-        cmd_shell_core(ctx, args)
-        return True
-    if path == ["shell", "nat"] or (path == ["shell"] and command == "nat"):
-        cmd_shell_nat(ctx, args)
-        return True
+    # Shell commands - support "shell core" from any level
+    if command == "shell" and args:
+        subcommand = args[0].lower()
+        if subcommand == "routing":
+            cmd_shell_routing(ctx, args[1:])
+            return True
+        if subcommand == "core":
+            cmd_shell_core(ctx, args[1:])
+            return True
+        if subcommand == "nat":
+            cmd_shell_nat(ctx, args[1:])
+            return True
+
+    # Shell commands when already in shell menu
+    if path == ["shell"]:
+        if command == "routing":
+            cmd_shell_routing(ctx, args)
+            return True
+        if command == "core":
+            cmd_shell_core(ctx, args)
+            return True
+        if command == "nat":
+            cmd_shell_nat(ctx, args)
+            return True
+
+    # Multi-word commands from any level: "loopbacks add", "nat mappings", etc.
+    if command == "loopbacks" and args:
+        subcommand = args[0].lower()
+        if subcommand == "list":
+            _show_loopbacks(ctx.config)
+            return True
+        if subcommand == "add":
+            cmd_loopback_add(ctx, args[1:])
+            return True
+        if subcommand == "delete":
+            cmd_loopback_delete(ctx, args[1:])
+            return True
+
+    if command == "bvi" and args:
+        subcommand = args[0].lower()
+        if subcommand == "list":
+            _show_bvi(ctx.config)
+            return True
+        if subcommand == "add":
+            cmd_bvi_add(ctx, args[1:])
+            return True
+        if subcommand == "delete":
+            cmd_bvi_delete(ctx, args[1:])
+            return True
+
+    if command == "vlan-passthrough" and args:
+        subcommand = args[0].lower()
+        if subcommand == "list":
+            _show_vlan_passthrough(ctx.config)
+            return True
+        if subcommand == "add":
+            cmd_vlan_passthrough_add(ctx, args[1:])
+            return True
+        if subcommand == "delete":
+            cmd_vlan_passthrough_delete(ctx, args[1:])
+            return True
+
+    # NAT multi-word commands: "nat mappings list", "nat bypass add", etc.
+    if command == "nat" and args:
+        subcommand = args[0].lower()
+        if subcommand == "set-prefix":
+            cmd_nat_set_prefix(ctx, args[1:])
+            return True
+        if subcommand == "mappings":
+            if len(args) > 1:
+                subcmd = args[1].lower()
+                if subcmd == "list":
+                    _show_nat_mappings(ctx.config)
+                    return True
+                if subcmd == "add":
+                    cmd_nat_mapping_add(ctx, args[2:])
+                    return True
+                if subcmd == "delete":
+                    cmd_nat_mapping_delete(ctx, args[2:])
+                    return True
+            # Just "nat mappings" - navigate there
+            ctx.path = ["nat", "mappings"]
+            return True
+        if subcommand == "bypass":
+            if len(args) > 1:
+                subcmd = args[1].lower()
+                if subcmd == "list":
+                    _show_nat_bypass(ctx.config)
+                    return True
+                if subcmd == "add":
+                    cmd_nat_bypass_add(ctx, args[2:])
+                    return True
+                if subcmd == "delete":
+                    cmd_nat_bypass_delete(ctx, args[2:])
+                    return True
+            # Just "nat bypass" - navigate there
+            ctx.path = ["nat", "bypass"]
+            return True
+
+    # BGP multi-word commands: "routing bgp enable", etc.
+    if command == "routing" and args:
+        subcommand = args[0].lower()
+        if subcommand == "bgp":
+            if len(args) > 1:
+                subcmd = args[1].lower()
+                if subcmd == "enable":
+                    cmd_bgp_enable(ctx, args[2:])
+                    return True
+                if subcmd == "disable":
+                    cmd_bgp_disable(ctx, args[2:])
+                    return True
+                if subcmd == "show":
+                    _show_bgp(ctx.config)
+                    return True
+            # Just "routing bgp" - navigate there
+            ctx.path = ["routing", "bgp"]
+            return True
+
+    # Snapshot multi-word commands: "snapshot list", "snapshot create", etc.
+    if command == "snapshot" and args:
+        subcommand = args[0].lower()
+        if subcommand == "list":
+            cmd_snapshot_list(ctx, args[1:])
+            return True
+        if subcommand == "create":
+            cmd_snapshot_create(ctx, args[1:])
+            return True
+        if subcommand == "delete":
+            cmd_snapshot_delete(ctx, args[1:])
+            return True
+        if subcommand == "export":
+            cmd_snapshot_export(ctx, args[1:])
+            return True
+        if subcommand in ("import", "receive"):
+            cmd_snapshot_import(ctx, args[1:])
+            return True
+        if subcommand == "rollback":
+            cmd_snapshot_rollback(ctx, args[1:])
+            return True
 
     # Loopback commands
     if path == ["loopbacks"]:
@@ -1776,6 +2011,27 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             return True
         if command == "disable":
             cmd_bgp_disable(ctx, args)
+            return True
+
+    # Snapshot commands (when in snapshot menu)
+    if path == ["snapshot"]:
+        if command == "list":
+            cmd_snapshot_list(ctx, args)
+            return True
+        if command == "create":
+            cmd_snapshot_create(ctx, args)
+            return True
+        if command == "delete":
+            cmd_snapshot_delete(ctx, args)
+            return True
+        if command == "export":
+            cmd_snapshot_export(ctx, args)
+            return True
+        if command in ("import", "receive"):
+            cmd_snapshot_import(ctx, args)
+            return True
+        if command == "rollback":
+            cmd_snapshot_rollback(ctx, args)
             return True
 
     # Try navigation

@@ -361,6 +361,45 @@ The configuration script (Python/Jinja2):
 6. Generates config files from templates
 7. Enables and starts services
 
+### IMP REPL
+
+Running `imp` with no arguments enters an interactive REPL for configuration management:
+
+```bash
+imp                    # Enter interactive REPL
+imp config edit        # Run configure-router.py wizard
+imp snapshot create    # Create a snapshot
+imp status             # Show service status
+```
+
+**REPL Design Principles:**
+
+- **Hierarchical navigation**: Menus like `interfaces`, `loopbacks`, `nat`, `shell`
+- **Multi-word commands work from any level**: You can type `shell core` from the root prompt instead of navigating to `shell` first, then typing `core`
+- **Tab completion is context-aware**: Typing `shell ` + TAB shows `core`, `nat`, `routing` (children of shell menu)
+- **Changes are staged**: Modifications update the in-memory config; use `apply` to save and regenerate files
+
+**Example session:**
+```
+imp> shell core                    # Direct command from root
+imp> loopbacks add                 # Add loopback without navigating
+imp> nat mappings list             # Multi-level command
+imp> snapshot list                 # List ZFS snapshots
+imp> snapshot create mybackup      # Create a snapshot
+imp> snapshot export mybackup      # Export for deployment
+imp> interfaces                    # Navigate into interfaces menu
+imp.interfaces> external
+imp.interfaces.external> show
+imp.interfaces.external> back
+imp.interfaces> home               # Return to root
+imp> apply                         # Save and regenerate configs
+```
+
+**Key files:**
+- `scripts/imp` — Main CLI entry point
+- `scripts/imp_repl.py` — REPL implementation with prompt_toolkit
+- `scripts/configure_router.py` — Dataclasses, validation, template rendering
+
 ### VPP Commands
 
 ```bash

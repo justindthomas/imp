@@ -242,10 +242,14 @@ def run_zfs(args: list, check: bool = True) -> subprocess.CompletedProcess:
 
 def cmd_snapshot_list(args) -> int:
     """List all snapshots."""
-    print(f"\n{Colors.BOLD}Boot Environment Snapshots{Colors.NC}")
-    print("=" * 70)
+    # Column widths: NAME=40, CREATED=24, USED=10, REFER=10, spaces=3, indent=2
+    TABLE_WIDTH = 89
 
-    result = run_zfs(["list", "-t", "snapshot", "-r", ZFS_ROOT, "-o", "name,creation,used,refer", "-s", "creation"], check=False)
+    print(f"\n{Colors.BOLD}Boot Environment Snapshots{Colors.NC}")
+    print("=" * TABLE_WIDTH)
+
+    # Use -H for tab-separated, -p for parseable (numeric) values
+    result = run_zfs(["list", "-H", "-t", "snapshot", "-r", ZFS_ROOT, "-o", "name,creation,used,refer", "-s", "creation"], check=False)
     if result.returncode != 0:
         error(f"Failed to list snapshots: {result.stderr}")
         return 1
@@ -253,33 +257,42 @@ def cmd_snapshot_list(args) -> int:
     if not result.stdout.strip():
         print("  No snapshots found")
     else:
-        # Parse and display nicely
+        # Parse tab-separated output
         lines = result.stdout.strip().split('\n')
         if lines:
-            print(f"  {'NAME':<40} {'CREATED':<20} {'USED':<10} {'REFER':<10}")
-            print("  " + "-" * 66)
-            for line in lines[1:]:  # Skip header
-                parts = line.split()
+            print(f"  {'NAME':<40} {'CREATED':<24} {'USED':<10} {'REFER':<10}")
+            print("  " + "-" * (TABLE_WIDTH - 2))
+            for line in lines:
+                parts = line.split('\t')
                 if len(parts) >= 4:
                     name = parts[0].replace(f"{ZFS_ROOT}/", "")
-                    print(f"  {name:<40} {parts[1]:<20} {parts[2]:<10} {parts[3]:<10}")
+                    # Creation is Unix timestamp with -H, convert to readable
+                    try:
+                        created = datetime.fromtimestamp(int(parts[1])).strftime("%Y-%m-%d %H:%M:%S")
+                    except (ValueError, OSError):
+                        created = parts[1]
+                    print(f"  {name:<40} {created:<24} {parts[2]:<10} {parts[3]:<10}")
 
     print(f"\n{Colors.BOLD}Persistent Data Snapshots{Colors.NC}")
-    print("=" * 70)
+    print("=" * TABLE_WIDTH)
 
-    result = run_zfs(["list", "-t", "snapshot", "-r", ZFS_PERSISTENT, "-o", "name,creation,used,refer", "-s", "creation"], check=False)
+    result = run_zfs(["list", "-H", "-t", "snapshot", "-r", ZFS_PERSISTENT, "-o", "name,creation,used,refer", "-s", "creation"], check=False)
     if result.returncode != 0 or not result.stdout.strip():
         print("  No snapshots found")
     else:
         lines = result.stdout.strip().split('\n')
         if lines:
-            print(f"  {'NAME':<40} {'CREATED':<20} {'USED':<10} {'REFER':<10}")
-            print("  " + "-" * 66)
-            for line in lines[1:]:
-                parts = line.split()
+            print(f"  {'NAME':<40} {'CREATED':<24} {'USED':<10} {'REFER':<10}")
+            print("  " + "-" * (TABLE_WIDTH - 2))
+            for line in lines:
+                parts = line.split('\t')
                 if len(parts) >= 4:
                     name = parts[0].replace(f"{ZFS_PERSISTENT}/", "persistent/")
-                    print(f"  {name:<40} {parts[1]:<20} {parts[2]:<10} {parts[3]:<10}")
+                    try:
+                        created = datetime.fromtimestamp(int(parts[1])).strftime("%Y-%m-%d %H:%M:%S")
+                    except (ValueError, OSError):
+                        created = parts[1]
+                    print(f"  {name:<40} {created:<24} {parts[2]:<10} {parts[3]:<10}")
 
     print()
     return 0
