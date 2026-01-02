@@ -276,6 +276,33 @@ This reads `/persistent/config/router.json`, regenerates all config files, and e
 
 ## Key Commands
 
+### Installation
+
+From the IMP Installer ISO (or any Debian Live with ZFS):
+
+```bash
+# Bootstrap install (downloads packages from internet, ~15-30 min)
+install-imp /dev/sda
+
+# Image install (from exported snapshot, ~2-5 min, offline capable)
+install-imp --image router-20240101-system.zfs.zst /dev/sda
+
+# Full restore (system + persistent data including config)
+install-imp --image router-20240101-system.zfs.zst \
+            --persistent router-20240101-persistent.zfs.zst /dev/sda
+```
+
+Image files are created on a running system with:
+```bash
+imp snapshot create mybackup
+imp snapshot export mybackup           # System only
+imp snapshot export --full mybackup    # System + persistent data
+
+# Creates:
+#   <hostname>-mybackup-system.zfs.zst
+#   <hostname>-mybackup-persistent.zfs.zst  (with --full)
+```
+
 ### On the Build VM
 
 ```bash

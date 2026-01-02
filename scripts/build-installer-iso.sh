@@ -293,13 +293,15 @@ cat > config/includes.chroot/etc/motd << 'EOF'
 ZFS modules are pre-compiled and ready to use.
 
 Quick start:
-  install-imp /dev/sda          # Full router install (VPP, FRR, Incus)
+  install-imp /dev/sda                          # Bootstrap from internet
+  install-imp --image system.zfs.zst /dev/sda   # Install from snapshot
 
 Or manually:
   modprobe zfs                  # Load ZFS (should be instant)
   lsblk                         # List disks
 
 After install, run:
+  imp                           # Interactive configuration REPL
   imp config edit               # Interactive network configuration
   imp status                    # Check service status
 

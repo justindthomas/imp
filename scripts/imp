@@ -441,23 +441,32 @@ def cmd_snapshot_export(args) -> int:
         error(f"Snapshot not found: {be_snapshot}")
         return 1
 
-    # Generate output filename
-    if args.output:
-        output_file = Path(args.output)
-    else:
-        hostname = os.uname().nodename
-        suffix = "full" if args.full else "system"
-        output_file = Path(f"{hostname}-{snap_name}-{suffix}.zfs.zst")
-
-    if output_file.exists() and not args.yes:
-        response = input(f"Output file {output_file} exists. Overwrite? [y/N]: ").strip().lower()
-        if response != 'y':
-            print("Aborted")
-            return 0
-
-    log(f"Exporting snapshot '{snap_name}'...")
+    # Generate output filename(s)
+    hostname = os.uname().nodename
+    base_name = f"{hostname}-{snap_name}"
 
     if args.full:
+        # Full export creates two files: system and persistent
+        if args.output:
+            # Strip any .zfs.zst suffix from user-provided output
+            base = str(args.output)
+            for suffix in ['.zfs.zst', '.zst', '.zfs']:
+                if base.endswith(suffix):
+                    base = base[:-len(suffix)]
+                    break
+            base_name = base
+
+        be_file = Path(f"{base_name}-system.zfs.zst")
+        persistent_file = Path(f"{base_name}-persistent.zfs.zst")
+
+        # Check for overwrites
+        for f in [be_file, persistent_file]:
+            if f.exists() and not args.yes:
+                response = input(f"Output file {f} exists. Overwrite? [y/N]: ").strip().lower()
+                if response != 'y':
+                    print("Aborted")
+                    return 0
+
         # Check for persistent snapshot
         result = run_zfs(["list", "-t", "snapshot", persistent_snapshot], check=False)
         if result.returncode != 0:
@@ -465,12 +474,8 @@ def cmd_snapshot_export(args) -> int:
             print("Use without --full to export system only")
             return 1
 
+        log(f"Exporting snapshot '{snap_name}'...")
         log("  Mode: Full backup (system + persistent data)")
-
-        # Create a combined stream using a temp marker approach
-        # We'll create separate files and note this in the filename
-        be_file = output_file.with_suffix('.system.zfs.zst')
-        persistent_file = output_file.with_suffix('.persistent.zfs.zst')
 
         log(f"  Exporting boot environment to {be_file}...")
         result = subprocess.run(
@@ -499,10 +504,25 @@ def cmd_snapshot_export(args) -> int:
         print(f"  System:     {be_file} ({be_size:.1f} MB)")
         print(f"  Persistent: {persistent_file} ({persistent_size:.1f} MB)")
         print(f"\nTo restore on this or another system:")
+        print(f"  install-imp --image {be_file} --persistent {persistent_file} /dev/sdX")
+        print(f"\nOr to import into an existing system:")
         print(f"  imp snapshot import {be_file}")
-        print(f"  imp snapshot import {persistent_file} --persistent")
+        print(f"  imp snapshot import --persistent {persistent_file}")
 
     else:
+        # System-only export
+        if args.output:
+            output_file = Path(args.output)
+        else:
+            output_file = Path(f"{base_name}-system.zfs.zst")
+
+        if output_file.exists() and not args.yes:
+            response = input(f"Output file {output_file} exists. Overwrite? [y/N]: ").strip().lower()
+            if response != 'y':
+                print("Aborted")
+                return 0
+
+        log(f"Exporting snapshot '{snap_name}'...")
         log("  Mode: System only (for deployment to other routers)")
         log(f"  Exporting to {output_file}...")
 
@@ -520,6 +540,8 @@ def cmd_snapshot_export(args) -> int:
         print(f"\n{Colors.GREEN}Export complete!{Colors.NC}")
         print(f"  File: {output_file} ({file_size:.1f} MB)")
         print(f"\nTo deploy on another router:")
+        print(f"  install-imp --image {output_file} /dev/sdX")
+        print(f"\nOr to import into an existing system:")
         print(f"  imp snapshot import {output_file}")
 
     print()

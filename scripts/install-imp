@@ -4,25 +4,33 @@
 #
 # This script:
 #   1. Partitions a disk and creates a ZFS pool
-#   2. Bootstraps Debian Bookworm
-#   3. Installs VPP (from fd.io), FRR, and Incus
-#   4. Installs configuration templates and scripts
+#   2. Either bootstraps Debian OR receives a pre-built image
+#   3. Installs VPP (from fd.io), FRR, and Incus (bootstrap mode only)
+#   4. Installs configuration templates and scripts (bootstrap mode only)
 #   5. Sets up zfsbootmenu for boot environment management
 #
-# Usage: install-imp <disk>
-# Example: install-imp /dev/sda
+# Usage:
+#   install-imp <disk>                       # Bootstrap from internet
+#   install-imp --image <file.zfs.zst> <disk>  # Install from snapshot
+#
+# Examples:
+#   install-imp /dev/sda
+#   install-imp --image /tmp/imp-v1.0.0.zfs.zst /dev/sda
 #
 # Run from the IMP Installer ISO or a Debian Bookworm Live CD with ZFS support.
 #
 
 set -euo pipefail
 
-DISK="${1:-}"
+# Defaults
 POOL_NAME="tank"
 ROOTFS="/mnt/root"
 HOSTNAME="router"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="${SCRIPT_DIR}/../config"
+IMAGE_FILE=""
+PERSISTENT_FILE=""
+INSTALL_MODE="bootstrap"  # "bootstrap" or "image"
 
 # Colors for output
 RED='\033[0;31m'
@@ -35,22 +43,85 @@ warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 usage() {
-    echo "Usage: $0 <disk>"
+    echo "Usage: $0 [--image <file.zfs.zst>] [--persistent <file.zfs.zst>] <disk>"
     echo ""
     echo "Arguments:"
-    echo "  disk    Target disk (e.g., /dev/sda, /dev/nvme0n1)"
+    echo "  disk              Target disk (e.g., /dev/sda, /dev/nvme0n1)"
+    echo ""
+    echo "Options:"
+    echo "  --image <file>      Install from pre-built ZFS snapshot (faster, offline)"
+    echo "                      Created by: imp snapshot export <name>"
+    echo "  --persistent <file> Also restore persistent data (config + data)"
+    echo "                      Created by: imp snapshot export --full <name>"
+    echo ""
+    echo "Installation modes:"
+    echo "  Bootstrap (default):  Downloads packages from internet (~15-30 min)"
+    echo "  Image (--image):      Receives pre-built snapshot (~2-5 min)"
+    echo ""
+    echo "Examples:"
+    echo "  $0 /dev/sda                                      # Bootstrap install"
+    echo "  $0 --image system.zfs.zst /dev/sda               # Image install"
+    echo "  $0 --image system.zfs.zst --persistent persistent.zfs.zst /dev/sda"
+    echo "                                                   # Full restore"
     echo ""
     echo "This script will DESTROY all data on the target disk."
-    echo ""
-    echo "Run from the IMP Installer ISO or a Debian Live CD with ZFS:"
-    echo "  sudo -i"
-    echo "  ./setup-router.sh /dev/sda"
     exit 1
 }
+
+# Parse arguments
+DISK=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --image|-i)
+            [[ -z "${2:-}" ]] && error "--image requires a file path"
+            IMAGE_FILE="$2"
+            INSTALL_MODE="image"
+            shift 2
+            ;;
+        --persistent|-p)
+            [[ -z "${2:-}" ]] && error "--persistent requires a file path"
+            PERSISTENT_FILE="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            ;;
+        -*)
+            error "Unknown option: $1"
+            ;;
+        *)
+            DISK="$1"
+            shift
+            ;;
+    esac
+done
 
 # Validate arguments
 [[ -z "$DISK" ]] && usage
 [[ ! -b "$DISK" ]] && error "Disk $DISK does not exist or is not a block device"
+
+# Validate image file if specified
+if [[ "$INSTALL_MODE" == "image" ]]; then
+    [[ ! -f "$IMAGE_FILE" ]] && error "Image file not found: $IMAGE_FILE"
+    # Extract BE name from filename (hostname-snapname-system.zfs.zst -> use snapname)
+    IMAGE_BASENAME=$(basename "$IMAGE_FILE")
+    if [[ "$IMAGE_BASENAME" == *-system.zfs.zst ]]; then
+        # Format: hostname-snapname-system.zfs.zst
+        BE_NAME="${IMAGE_BASENAME%-system.zfs.zst}"
+        BE_NAME="${BE_NAME##*-}"  # Get last part after hostname
+    elif [[ "$IMAGE_BASENAME" == *.zfs.zst ]]; then
+        # Generic format: name.zfs.zst
+        BE_NAME="${IMAGE_BASENAME%.zfs.zst}"
+    else
+        BE_NAME="imported-$(date +%Y%m%d)"
+    fi
+fi
+
+# Validate persistent file if specified
+if [[ -n "$PERSISTENT_FILE" ]]; then
+    [[ "$INSTALL_MODE" != "image" ]] && error "--persistent requires --image"
+    [[ ! -f "$PERSISTENT_FILE" ]] && error "Persistent file not found: $PERSISTENT_FILE"
+fi
 
 # Check we're running as root
 [[ $EUID -ne 0 ]] && error "This script must be run as root"
@@ -60,14 +131,16 @@ if ! command -v zpool &>/dev/null; then
     error "ZFS not available. Install with: apt install -y zfsutils-linux zfs-dkms && modprobe zfs"
 fi
 
-# Check if config directory exists (running from repo)
-if [[ ! -d "$CONFIG_DIR" ]]; then
-    # Try alternate location (installed on ISO)
-    if [[ -d "/root/imp-build/config" ]]; then
-        CONFIG_DIR="/root/imp-build/config"
-        SCRIPT_DIR="/root/imp-build/scripts"
-    else
-        error "Cannot find config directory. Run from imp-build repository."
+# Check if config directory exists (only needed for bootstrap mode)
+if [[ "$INSTALL_MODE" == "bootstrap" ]]; then
+    if [[ ! -d "$CONFIG_DIR" ]]; then
+        # Try alternate location (installed on ISO)
+        if [[ -d "/root/imp-build/config" ]]; then
+            CONFIG_DIR="/root/imp-build/config"
+            SCRIPT_DIR="/root/imp-build/scripts"
+        else
+            error "Cannot find config directory. Run from imp-build repository."
+        fi
     fi
 fi
 
@@ -89,14 +162,35 @@ echo "=========================================="
 echo ""
 echo "Target disk: $DISK"
 echo "Pool name:   $POOL_NAME"
-echo "Hostname:    $HOSTNAME"
 echo ""
-echo "This will install:"
-echo "  - Debian Bookworm with ZFS root"
-echo "  - VPP (Vector Packet Processing)"
-echo "  - FRR (Free Range Routing)"
-echo "  - Incus (container runtime)"
-echo "  - IMP configuration tools"
+if [[ "$INSTALL_MODE" == "image" ]]; then
+    echo "Install mode: IMAGE (from exported snapshot)"
+    echo "Image file:   $IMAGE_FILE"
+    if [[ -n "$PERSISTENT_FILE" ]]; then
+        echo "Persistent:   $PERSISTENT_FILE"
+    fi
+    echo "BE name:      $BE_NAME"
+    echo ""
+    echo "This will:"
+    echo "  - Partition disk and create ZFS pool"
+    echo "  - Receive system image as new boot environment"
+    if [[ -n "$PERSISTENT_FILE" ]]; then
+        echo "  - Restore persistent data (config + data)"
+    else
+        echo "  - Create empty persistent datasets"
+    fi
+    echo "  - Set up ZFSBootMenu"
+else
+    echo "Install mode: BOOTSTRAP (from internet)"
+    echo "Hostname:     $HOSTNAME"
+    echo ""
+    echo "This will install:"
+    echo "  - Debian Bookworm with ZFS root"
+    echo "  - VPP (Vector Packet Processing)"
+    echo "  - FRR (Free Range Routing)"
+    echo "  - Incus (container runtime)"
+    echo "  - IMP configuration tools"
+fi
 echo ""
 if [[ -n "$EXISTING_POOL" ]]; then
     echo -e "${RED}WARNING: A ZFS pool named '$POOL_NAME' already exists!${NC}"
@@ -172,49 +266,93 @@ zpool create -f \
 
 # Boot environment structure
 zfs create -o canmount=off -o mountpoint=none "${POOL_NAME}/ROOT"
-zfs create -o canmount=noauto -o mountpoint=/ "${POOL_NAME}/ROOT/debian-initial"
 
 # Persistent data (survives across deployments)
-zfs create -o canmount=off -o mountpoint=/persistent "${POOL_NAME}/persistent"
-zfs create "${POOL_NAME}/persistent/config"
-zfs create "${POOL_NAME}/persistent/data"
+if [[ -n "$PERSISTENT_FILE" ]]; then
+    # Restore persistent data from backup
+    log "Restoring persistent data from backup..."
+    zstd -d < "$PERSISTENT_FILE" | zfs receive "${POOL_NAME}/persistent"
+    # Fix mountpoint if needed
+    zfs set mountpoint=/persistent "${POOL_NAME}/persistent"
+else
+    # Create empty persistent datasets
+    zfs create -o canmount=off -o mountpoint=/persistent "${POOL_NAME}/persistent"
+    zfs create "${POOL_NAME}/persistent/config"
+    zfs create "${POOL_NAME}/persistent/data"
+fi
 
-# Mount for installation
-zfs set mountpoint="$ROOTFS" "${POOL_NAME}/ROOT/debian-initial"
-zfs mount "${POOL_NAME}/ROOT/debian-initial"
+if [[ "$INSTALL_MODE" == "image" ]]; then
+    # ==========================================================================
+    # IMAGE MODE: Receive snapshot from exported file
+    # ==========================================================================
+    log "Receiving system image (this may take a few minutes)..."
+
+    # Receive the snapshot - it comes as a full stream
+    zstd -d < "$IMAGE_FILE" | zfs receive "${POOL_NAME}/ROOT/${BE_NAME}"
+
+    # The received dataset may have wrong mountpoint from source system
+    # Set it correctly for this new installation
+    zfs set mountpoint=/ "${POOL_NAME}/ROOT/${BE_NAME}"
+    zfs set canmount=noauto "${POOL_NAME}/ROOT/${BE_NAME}"
+
+    # Mount for any post-receive configuration
+    zfs set mountpoint="$ROOTFS" "${POOL_NAME}/ROOT/${BE_NAME}"
+    zfs mount "${POOL_NAME}/ROOT/${BE_NAME}"
+
+    BOOT_ENV="${BE_NAME}"
+else
+    # ==========================================================================
+    # BOOTSTRAP MODE: Create empty BE and install from internet
+    # ==========================================================================
+    zfs create -o canmount=noauto -o mountpoint=/ "${POOL_NAME}/ROOT/debian-initial"
+
+    # Mount for installation
+    zfs set mountpoint="$ROOTFS" "${POOL_NAME}/ROOT/debian-initial"
+    zfs mount "${POOL_NAME}/ROOT/debian-initial"
+
+    BOOT_ENV="debian-initial"
+fi
 
 # =============================================================================
-# Bootstrap Debian
+# Mount virtual filesystems for chroot operations
 # =============================================================================
-log "Bootstrapping Debian Bookworm (this takes a few minutes)..."
-
-debootstrap \
-    --include=linux-image-amd64,linux-headers-amd64,systemd,systemd-sysv,dbus,locales,keyboard-configuration,curl,gnupg,ca-certificates \
-    bookworm \
-    "$ROOTFS" \
-    https://deb.debian.org/debian
-
-# =============================================================================
-# Configure the system
-# =============================================================================
-log "Configuring system..."
-
-# Mount virtual filesystems
+log "Mounting virtual filesystems..."
 mount --rbind /dev  "$ROOTFS/dev"
 mount --rbind /proc "$ROOTFS/proc"
 mount --rbind /sys  "$ROOTFS/sys"
-
-# Temporary DNS for chroot (systemd-resolved will take over after boot)
-rm -f "$ROOTFS/etc/resolv.conf"
-echo "nameserver 1.1.1.1" > "$ROOTFS/etc/resolv.conf"
 
 # Mount ESP
 mkdir -p "$ROOTFS/boot/efi"
 mount "${PART_PREFIX}2" "$ROOTFS/boot/efi"
 
-# Hostname
-echo "$HOSTNAME" > "$ROOTFS/etc/hostname"
-cat > "$ROOTFS/etc/hosts" << EOF
+if [[ "$INSTALL_MODE" == "bootstrap" ]]; then
+    # =========================================================================
+    # BOOTSTRAP MODE: Build system from internet
+    # =========================================================================
+
+    # -------------------------------------------------------------------------
+    # Bootstrap Debian
+    # -------------------------------------------------------------------------
+    log "Bootstrapping Debian Bookworm (this takes a few minutes)..."
+
+    debootstrap \
+        --include=linux-image-amd64,linux-headers-amd64,systemd,systemd-sysv,dbus,locales,keyboard-configuration,curl,gnupg,ca-certificates \
+        bookworm \
+        "$ROOTFS" \
+        https://deb.debian.org/debian
+
+    # -------------------------------------------------------------------------
+    # Configure the system
+    # -------------------------------------------------------------------------
+    log "Configuring system..."
+
+    # Temporary DNS for chroot (systemd-resolved will take over after boot)
+    rm -f "$ROOTFS/etc/resolv.conf"
+    echo "nameserver 1.1.1.1" > "$ROOTFS/etc/resolv.conf"
+
+    # Hostname
+    echo "$HOSTNAME" > "$ROOTFS/etc/hostname"
+    cat > "$ROOTFS/etc/hosts" << EOF
 127.0.0.1   localhost
 127.0.1.1   $HOSTNAME
 
@@ -223,22 +361,22 @@ ff02::1     ip6-allnodes
 ff02::2     ip6-allrouters
 EOF
 
-# Apt sources (including backports for Incus)
-cat > "$ROOTFS/etc/apt/sources.list" << 'EOF'
+    # Apt sources (including backports for Incus)
+    cat > "$ROOTFS/etc/apt/sources.list" << 'EOF'
 deb http://deb.debian.org/debian bookworm main contrib
 deb http://deb.debian.org/debian bookworm-updates main contrib
 deb http://deb.debian.org/debian bookworm-backports main contrib
 deb http://security.debian.org/debian-security bookworm-security main contrib
 EOF
 
-# Locale
-sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' "$ROOTFS/etc/locale.gen"
-chroot "$ROOTFS" locale-gen
-echo 'LANG=en_US.UTF-8' > "$ROOTFS/etc/default/locale"
+    # Locale
+    sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' "$ROOTFS/etc/locale.gen"
+    chroot "$ROOTFS" locale-gen
+    echo 'LANG=en_US.UTF-8' > "$ROOTFS/etc/default/locale"
 
-# Initial network config (DHCP on all ethernet - will be replaced by configure-router.py)
-mkdir -p "$ROOTFS/etc/systemd/network"
-cat > "$ROOTFS/etc/systemd/network/20-wired.network" << 'EOF'
+    # Initial network config (DHCP on all ethernet - will be replaced by configure-router.py)
+    mkdir -p "$ROOTFS/etc/systemd/network"
+    cat > "$ROOTFS/etc/systemd/network/20-wired.network" << 'EOF'
 [Match]
 Name=en*
 
@@ -246,13 +384,13 @@ Name=en*
 DHCP=yes
 EOF
 
-# =============================================================================
-# Pre-seed debconf for non-interactive installation
-# =============================================================================
-log "Configuring non-interactive installation..."
+    # -------------------------------------------------------------------------
+    # Pre-seed debconf for non-interactive installation
+    # -------------------------------------------------------------------------
+    log "Configuring non-interactive installation..."
 
-# Accept ZFS license
-cat > "$ROOTFS/tmp/debconf-selections" << 'EOF'
+    # Accept ZFS license
+    cat > "$ROOTFS/tmp/debconf-selections" << 'EOF'
 # Keyboard configuration - use US layout
 keyboard-configuration keyboard-configuration/layoutcode string us
 keyboard-configuration keyboard-configuration/model select Generic 105-key PC
@@ -262,152 +400,161 @@ console-setup console-setup/charmap47 select UTF-8
 # ZFS license acknowledgment
 zfs-dkms zfs-dkms/note-incompatible-licenses note
 EOF
-chroot "$ROOTFS" debconf-set-selections /tmp/debconf-selections
-rm "$ROOTFS/tmp/debconf-selections"
+    chroot "$ROOTFS" debconf-set-selections /tmp/debconf-selections
+    rm "$ROOTFS/tmp/debconf-selections"
+
+    # -------------------------------------------------------------------------
+    # Install base packages
+    # -------------------------------------------------------------------------
+    log "Installing base packages..."
+    chroot "$ROOTFS" apt-get update
+    DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y \
+        zfsutils-linux \
+        zfs-initramfs \
+        systemd-resolved \
+        iproute2 \
+        dhcpcd-base \
+        openssh-server \
+        efibootmgr \
+        zstd \
+        console-setup \
+        python3 \
+        python3-jinja2 \
+        python3-prompt-toolkit
+
+    # -------------------------------------------------------------------------
+    # Setup fd.io repository and install VPP
+    # -------------------------------------------------------------------------
+    log "Setting up fd.io repository..."
+
+    # Restore DNS (systemd-resolved install recreates the symlink)
+    rm -f "$ROOTFS/etc/resolv.conf"
+    echo "nameserver 1.1.1.1" > "$ROOTFS/etc/resolv.conf"
+
+    mkdir -p "$ROOTFS/etc/apt/keyrings"
+    # Run gpg inside the chroot where gnupg is installed
+    curl -fsSL https://packagecloud.io/fdio/release/gpgkey | \
+        chroot "$ROOTFS" gpg --dearmor -o /etc/apt/keyrings/fdio_release-archive-keyring.gpg
+
+    # Copy fd.io sources list
+    cp "$CONFIG_DIR/etc/apt/sources.list.d/fdio_release.list" "$ROOTFS/etc/apt/sources.list.d/"
+
+    chroot "$ROOTFS" apt-get update
+
+    log "Installing VPP..."
+    DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y \
+        vpp \
+        vpp-plugin-core \
+        vpp-plugin-dpdk
+
+    # -------------------------------------------------------------------------
+    # Install FRR
+    # -------------------------------------------------------------------------
+    log "Installing FRR..."
+    DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y frr frr-pythontools
+
+    # -------------------------------------------------------------------------
+    # Install Incus from backports
+    # -------------------------------------------------------------------------
+    log "Installing Incus from backports..."
+    DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y -t bookworm-backports incus
+
+    # -------------------------------------------------------------------------
+    # Copy static configuration files
+    # -------------------------------------------------------------------------
+    log "Installing static configuration files..."
+
+    # VPP directories
+    mkdir -p "$ROOTFS/etc/vpp"
+    mkdir -p "$ROOTFS/var/log/vpp"
+
+    # FRR static configuration (daemons list, vtysh settings)
+    cp "$CONFIG_DIR/etc/frr/daemons" "$ROOTFS/etc/frr/"
+    cp "$CONFIG_DIR/etc/frr/vtysh.conf" "$ROOTFS/etc/frr/"
+    chroot "$ROOTFS" chown -R frr:frr /etc/frr
+
+    # Static systemd service units
+    cp "$CONFIG_DIR/etc/systemd/system/netns-dataplane.service" "$ROOTFS/etc/systemd/system/"
+    cp "$CONFIG_DIR/etc/systemd/system/vpp-core.service" "$ROOTFS/etc/systemd/system/"
+    cp "$CONFIG_DIR/etc/systemd/system/vpp-core-config.service" "$ROOTFS/etc/systemd/system/"
+    cp "$CONFIG_DIR/etc/systemd/system/vpp-nat.service" "$ROOTFS/etc/systemd/system/"
+    cp "$CONFIG_DIR/etc/systemd/system/incus-dataplane.service" "$ROOTFS/etc/systemd/system/"
+    cp "$CONFIG_DIR/etc/systemd/system/incus-init.service" "$ROOTFS/etc/systemd/system/"
+    cp "$CONFIG_DIR/etc/systemd/system/imp-apply-config.service" "$ROOTFS/etc/systemd/system/"
+
+    # FRR drop-in to ensure it starts after VPP
+    mkdir -p "$ROOTFS/etc/systemd/system/frr.service.d"
+    cp "$CONFIG_DIR/etc/systemd/system/frr.service.d/after-vpp.conf" "$ROOTFS/etc/systemd/system/frr.service.d/"
+
+    # Static helper scripts
+    mkdir -p "$ROOTFS/usr/local/bin"
+    cp "$CONFIG_DIR/usr/local/bin/wait-for-iface-load" "$ROOTFS/usr/local/bin/"
+    chmod +x "$ROOTFS/usr/local/bin/"*
+
+    # Create netns directory
+    mkdir -p "$ROOTFS/etc/netns/dataplane"
+
+    # -------------------------------------------------------------------------
+    # Install Jinja2 templates for configure-router.py
+    # -------------------------------------------------------------------------
+    log "Installing configuration templates..."
+
+    mkdir -p "$ROOTFS/etc/imp/templates/vpp"
+    mkdir -p "$ROOTFS/etc/imp/templates/frr"
+    mkdir -p "$ROOTFS/etc/imp/templates/systemd"
+    mkdir -p "$ROOTFS/etc/imp/templates/scripts"
+
+    cp "$CONFIG_DIR/templates/vpp/"*.j2 "$ROOTFS/etc/imp/templates/vpp/"
+    cp "$CONFIG_DIR/templates/frr/"*.j2 "$ROOTFS/etc/imp/templates/frr/"
+    cp "$CONFIG_DIR/templates/systemd/"*.j2 "$ROOTFS/etc/imp/templates/systemd/"
+    cp "$CONFIG_DIR/templates/scripts/"*.j2 "$ROOTFS/etc/imp/templates/scripts/"
+
+    # Install configure-router.py
+    cp "$SCRIPT_DIR/configure-router.py" "$ROOTFS/usr/local/bin/"
+    chmod +x "$ROOTFS/usr/local/bin/configure-router.py"
+
+    # Create symlinks for convenience and Python imports
+    ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure-router"
+    ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure_router.py"
+
+    # Install imp CLI and REPL
+    cp "$SCRIPT_DIR/imp" "$ROOTFS/usr/local/bin/"
+    cp "$SCRIPT_DIR/imp_repl.py" "$ROOTFS/usr/local/bin/"
+    chmod +x "$ROOTFS/usr/local/bin/imp"
+    chmod +x "$ROOTFS/usr/local/bin/imp_repl.py"
+
+    # -------------------------------------------------------------------------
+    # Enable services
+    # -------------------------------------------------------------------------
+    log "Enabling services..."
+    chroot "$ROOTFS" systemctl enable \
+        systemd-networkd \
+        systemd-resolved \
+        ssh \
+        imp-apply-config
+
+    # -------------------------------------------------------------------------
+    # Set root password
+    # -------------------------------------------------------------------------
+    log "Setting root password..."
+    echo "root:router" | chroot "$ROOTFS" chpasswd
+    warn "Default root password is 'router' - change it after first boot!"
+
+else
+    # =========================================================================
+    # IMAGE MODE: System already configured, just need minor adjustments
+    # =========================================================================
+    log "Image received successfully"
+
+    # The image contains everything - packages, configs, scripts
+    # We may need to regenerate hostid and update initramfs for new hardware
+fi
 
 # =============================================================================
-# Install base packages
+# Common steps for both modes
 # =============================================================================
-log "Installing base packages..."
-chroot "$ROOTFS" apt-get update
-DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y \
-    zfsutils-linux \
-    zfs-initramfs \
-    systemd-resolved \
-    iproute2 \
-    dhcpcd-base \
-    openssh-server \
-    efibootmgr \
-    zstd \
-    console-setup \
-    python3 \
-    python3-jinja2 \
-    python3-prompt-toolkit
 
-# =============================================================================
-# Setup fd.io repository and install VPP
-# =============================================================================
-log "Setting up fd.io repository..."
-
-# Restore DNS (systemd-resolved install recreates the symlink)
-rm -f "$ROOTFS/etc/resolv.conf"
-echo "nameserver 1.1.1.1" > "$ROOTFS/etc/resolv.conf"
-
-mkdir -p "$ROOTFS/etc/apt/keyrings"
-# Run gpg inside the chroot where gnupg is installed
-curl -fsSL https://packagecloud.io/fdio/release/gpgkey | \
-    chroot "$ROOTFS" gpg --dearmor -o /etc/apt/keyrings/fdio_release-archive-keyring.gpg
-
-# Copy fd.io sources list
-cp "$CONFIG_DIR/etc/apt/sources.list.d/fdio_release.list" "$ROOTFS/etc/apt/sources.list.d/"
-
-chroot "$ROOTFS" apt-get update
-
-log "Installing VPP..."
-DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y \
-    vpp \
-    vpp-plugin-core \
-    vpp-plugin-dpdk
-
-# =============================================================================
-# Install FRR
-# =============================================================================
-log "Installing FRR..."
-DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y frr frr-pythontools
-
-# =============================================================================
-# Install Incus from backports
-# =============================================================================
-log "Installing Incus from backports..."
-DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y -t bookworm-backports incus
-
-# =============================================================================
-# Copy static configuration files (templates are used for machine-specific config)
-# =============================================================================
-log "Installing static configuration files..."
-
-# VPP directories
-mkdir -p "$ROOTFS/etc/vpp"
-mkdir -p "$ROOTFS/var/log/vpp"
-
-# Note: VPP startup configs (startup-core.conf and startup-nat.conf) are
-# now templates generated by configure-router.py with CPU-specific settings
-
-# FRR static configuration (daemons list, vtysh settings)
-cp "$CONFIG_DIR/etc/frr/daemons" "$ROOTFS/etc/frr/"
-cp "$CONFIG_DIR/etc/frr/vtysh.conf" "$ROOTFS/etc/frr/"
-chroot "$ROOTFS" chown -R frr:frr /etc/frr
-
-# Static systemd service units (netns-move-interfaces is templated)
-cp "$CONFIG_DIR/etc/systemd/system/netns-dataplane.service" "$ROOTFS/etc/systemd/system/"
-cp "$CONFIG_DIR/etc/systemd/system/vpp-core.service" "$ROOTFS/etc/systemd/system/"
-cp "$CONFIG_DIR/etc/systemd/system/vpp-core-config.service" "$ROOTFS/etc/systemd/system/"
-cp "$CONFIG_DIR/etc/systemd/system/vpp-nat.service" "$ROOTFS/etc/systemd/system/"
-cp "$CONFIG_DIR/etc/systemd/system/incus-dataplane.service" "$ROOTFS/etc/systemd/system/"
-cp "$CONFIG_DIR/etc/systemd/system/incus-init.service" "$ROOTFS/etc/systemd/system/"
-cp "$CONFIG_DIR/etc/systemd/system/imp-apply-config.service" "$ROOTFS/etc/systemd/system/"
-
-# FRR drop-in to ensure it starts after VPP
-mkdir -p "$ROOTFS/etc/systemd/system/frr.service.d"
-cp "$CONFIG_DIR/etc/systemd/system/frr.service.d/after-vpp.conf" "$ROOTFS/etc/systemd/system/frr.service.d/"
-
-# Static helper scripts (incus-init.sh is now a template generated by configure-router.py)
-mkdir -p "$ROOTFS/usr/local/bin"
-cp "$CONFIG_DIR/usr/local/bin/wait-for-iface-load" "$ROOTFS/usr/local/bin/"
-chmod +x "$ROOTFS/usr/local/bin/"*
-
-# Create netns directory
-mkdir -p "$ROOTFS/etc/netns/dataplane"
-
-# =============================================================================
-# Install Jinja2 templates for configure-router.py
-# =============================================================================
-log "Installing configuration templates..."
-
-mkdir -p "$ROOTFS/etc/imp/templates/vpp"
-mkdir -p "$ROOTFS/etc/imp/templates/frr"
-mkdir -p "$ROOTFS/etc/imp/templates/systemd"
-mkdir -p "$ROOTFS/etc/imp/templates/scripts"
-
-cp "$CONFIG_DIR/templates/vpp/"*.j2 "$ROOTFS/etc/imp/templates/vpp/"
-cp "$CONFIG_DIR/templates/frr/"*.j2 "$ROOTFS/etc/imp/templates/frr/"
-cp "$CONFIG_DIR/templates/systemd/"*.j2 "$ROOTFS/etc/imp/templates/systemd/"
-cp "$CONFIG_DIR/templates/scripts/"*.j2 "$ROOTFS/etc/imp/templates/scripts/"
-
-# Install configure-router.py
-cp "$SCRIPT_DIR/configure-router.py" "$ROOTFS/usr/local/bin/"
-chmod +x "$ROOTFS/usr/local/bin/configure-router.py"
-
-# Create symlinks for convenience and Python imports
-ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure-router"
-ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure_router.py"
-
-# Install imp CLI and REPL
-cp "$SCRIPT_DIR/imp" "$ROOTFS/usr/local/bin/"
-cp "$SCRIPT_DIR/imp_repl.py" "$ROOTFS/usr/local/bin/"
-chmod +x "$ROOTFS/usr/local/bin/imp"
-chmod +x "$ROOTFS/usr/local/bin/imp_repl.py"
-
-# =============================================================================
-# Enable services
-# =============================================================================
-log "Enabling services..."
-# Enable basic services and imp-apply-config (which auto-applies config on boot)
-# Other dataplane services are enabled by configure-router.py
-chroot "$ROOTFS" systemctl enable \
-    systemd-networkd \
-    systemd-resolved \
-    ssh \
-    imp-apply-config
-
-# =============================================================================
-# Set root password
-# =============================================================================
-log "Setting root password..."
-echo "root:router" | chroot "$ROOTFS" chpasswd
-warn "Default root password is 'router' - change it after first boot!"
-
-# Generate hostid (required for ZFS pool import)
+# Generate hostid (required for ZFS pool import on new hardware)
 log "Generating hostid..."
 zgenhostid -f -o "${ROOTFS}/etc/hostid"
 
@@ -433,10 +580,11 @@ chroot "$ROOTFS" efibootmgr -c -d "$DISK" -p 2 -L "ZFSBootMenu" -l '\EFI\ZBM\zfs
 # =============================================================================
 log "Setting ZFS boot properties..."
 
-zpool set bootfs="${POOL_NAME}/ROOT/debian-initial" "$POOL_NAME"
-zfs set org.zfsbootmenu:commandline="quiet" "${POOL_NAME}/ROOT/debian-initial"
+zpool set bootfs="${POOL_NAME}/ROOT/${BOOT_ENV}" "$POOL_NAME"
+zfs set org.zfsbootmenu:commandline="quiet" "${POOL_NAME}/ROOT/${BOOT_ENV}"
 
-# Regenerate initramfs
+# Regenerate initramfs (important for new hardware in image mode)
+log "Regenerating initramfs..."
 chroot "$ROOTFS" update-initramfs -u -k all
 
 # =============================================================================
@@ -457,15 +605,23 @@ sleep 2
 
 # Unmount ZFS filesystem before changing mountpoint
 log "Setting ZFS mountpoints for booting..."
-zfs unmount "${POOL_NAME}/ROOT/debian-initial" 2>/dev/null || true
+zfs unmount "${POOL_NAME}/ROOT/${BOOT_ENV}" 2>/dev/null || true
 
 # Set mountpoints for booting (must be done while unmounted)
-zfs set mountpoint=/ "${POOL_NAME}/ROOT/debian-initial"
-zfs set mountpoint=/persistent/config "${POOL_NAME}/persistent/config"
-zfs set mountpoint=/persistent/data "${POOL_NAME}/persistent/data"
+zfs set mountpoint=/ "${POOL_NAME}/ROOT/${BOOT_ENV}"
+
+# Set persistent mountpoints (handles both fresh and restored cases)
+zfs set mountpoint=/persistent "${POOL_NAME}/persistent" 2>/dev/null || true
+# Only set child mountpoints if they exist (they might not in restored case with different structure)
+if zfs list "${POOL_NAME}/persistent/config" &>/dev/null; then
+    zfs set mountpoint=/persistent/config "${POOL_NAME}/persistent/config"
+fi
+if zfs list "${POOL_NAME}/persistent/data" &>/dev/null; then
+    zfs set mountpoint=/persistent/data "${POOL_NAME}/persistent/data"
+fi
 
 # Verify mountpoint is correct
-VERIFY_MP=$(zfs get -H -o value mountpoint "${POOL_NAME}/ROOT/debian-initial")
+VERIFY_MP=$(zfs get -H -o value mountpoint "${POOL_NAME}/ROOT/${BOOT_ENV}")
 if [[ "$VERIFY_MP" != "/" ]]; then
     error "Mountpoint not set correctly (got: $VERIFY_MP, expected: /)"
 fi
@@ -484,21 +640,45 @@ echo "=========================================="
 log "IMP Router setup complete!"
 echo "=========================================="
 echo ""
-echo "Installed components:"
-echo "  - Debian Bookworm with ZFS root"
-echo "  - VPP (Vector Packet Processing) from fd.io"
-echo "  - FRR (Free Range Routing)"
-echo "  - Incus (container runtime)"
-echo "  - ZFSBootMenu"
+echo "Boot environment: ${BOOT_ENV}"
+echo ""
+if [[ "$INSTALL_MODE" == "image" ]]; then
+    echo "Installed from: $(basename "$IMAGE_FILE")"
+    if [[ -n "$PERSISTENT_FILE" ]]; then
+        echo "Persistent:     $(basename "$PERSISTENT_FILE") (restored)"
+    fi
+    echo ""
+    echo "The system image includes all packages and configuration."
+    if [[ -n "$PERSISTENT_FILE" ]]; then
+        echo "Persistent data (including router config) was restored."
+        echo "The configuration will be applied on first boot."
+    else
+        echo "If the source system had a saved configuration, it will be"
+        echo "applied on first boot via imp-apply-config service."
+    fi
+else
+    echo "Installed components:"
+    echo "  - Debian Bookworm with ZFS root"
+    echo "  - VPP (Vector Packet Processing) from fd.io"
+    echo "  - FRR (Free Range Routing)"
+    echo "  - Incus (container runtime)"
+    echo "  - ZFSBootMenu"
+fi
 echo ""
 echo "Next steps:"
 echo "  1. Remove the Live CD/USB"
 echo "  2. Reboot"
-echo "  3. Login as root (password: router)"
-echo "  4. Run 'imp config edit' to set up networking"
-echo "  5. Change the root password!"
+if [[ "$INSTALL_MODE" == "bootstrap" ]]; then
+    echo "  3. Login as root (password: router)"
+    echo "  4. Run 'imp config edit' to set up networking"
+    echo "  5. Change the root password!"
+else
+    echo "  3. Login with the credentials from the source system"
+    echo "  4. Run 'imp config edit' if network reconfiguration needed"
+fi
 echo ""
 echo "IMP CLI commands:"
+echo "  imp                 - Interactive configuration REPL"
 echo "  imp config edit     - Configure router interactively"
 echo "  imp config apply    - Re-apply saved configuration"
 echo "  imp status          - Show service status"
