@@ -127,10 +127,10 @@ echo "Installing Incus from backports..."
 DEBIAN_FRONTEND=noninteractive chroot "$MOUNTPOINT" apt-get install -y -t bookworm-backports incus
 
 # =============================================================================
-# Install Python/Jinja2 for configuration script
+# Install Python dependencies for configuration scripts
 # =============================================================================
-echo "Installing Python/Jinja2..."
-DEBIAN_FRONTEND=noninteractive chroot "$MOUNTPOINT" apt-get install -y python3 python3-jinja2
+echo "Installing Python dependencies..."
+DEBIAN_FRONTEND=noninteractive chroot "$MOUNTPOINT" apt-get install -y python3 python3-jinja2 python3-prompt-toolkit
 
 # =============================================================================
 # Copy configuration templates and scripts
@@ -191,12 +191,15 @@ cp "${CONFIG_DIR}/templates/scripts/"*.j2 "${MOUNTPOINT}/etc/imp/templates/scrip
 cp "${SCRIPT_DIR}/configure-router.py" "${MOUNTPOINT}/usr/local/bin/"
 chmod +x "${MOUNTPOINT}/usr/local/bin/configure-router.py"
 
-# Create symlink for convenience
+# Create symlinks for convenience and Python imports
 ln -sf configure-router.py "${MOUNTPOINT}/usr/local/bin/configure-router"
+ln -sf configure-router.py "${MOUNTPOINT}/usr/local/bin/configure_router.py"
 
-# IMP CLI utility
+# IMP CLI utility and REPL
 cp "${SCRIPT_DIR}/imp" "${MOUNTPOINT}/usr/local/bin/"
+cp "${SCRIPT_DIR}/imp_repl.py" "${MOUNTPOINT}/usr/local/bin/"
 chmod +x "${MOUNTPOINT}/usr/local/bin/imp"
+chmod +x "${MOUNTPOINT}/usr/local/bin/imp_repl.py"
 
 # =============================================================================
 # Enable services

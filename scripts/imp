@@ -3,6 +3,7 @@
 imp - IMP Router Management CLI
 
 Usage:
+    imp                       Enter interactive configuration REPL
     imp config apply          Apply configuration from /persistent/config/router.json
     imp config edit           Edit configuration interactively
     imp shell routing         Open FRR/vtysh shell (routing protocols)
@@ -683,11 +684,21 @@ def cmd_snapshot_delete(args) -> int:
 # =============================================================================
 
 def main() -> int:
+    # If no arguments, start interactive REPL
+    if len(sys.argv) == 1:
+        try:
+            from imp_repl import run_repl
+            return run_repl()
+        except ImportError as e:
+            error(f"Failed to import REPL module: {e}")
+            print("Falling back to help display...")
+
     parser = argparse.ArgumentParser(
         description="IMP Router Management CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  imp                           Enter interactive REPL
   imp config apply              Apply saved configuration
   imp config edit               Interactive configuration wizard
   imp shell routing             Open FRR/vtysh for BGP/OSPF

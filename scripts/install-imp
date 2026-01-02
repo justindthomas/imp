@@ -281,7 +281,8 @@ DEBIAN_FRONTEND=noninteractive chroot "$ROOTFS" apt-get install -y \
     zstd \
     console-setup \
     python3 \
-    python3-jinja2
+    python3-jinja2 \
+    python3-prompt-toolkit
 
 # =============================================================================
 # Setup fd.io repository and install VPP
@@ -376,11 +377,16 @@ cp "$CONFIG_DIR/templates/scripts/"*.j2 "$ROOTFS/etc/imp/templates/scripts/"
 # Install configure-router.py
 cp "$SCRIPT_DIR/configure-router.py" "$ROOTFS/usr/local/bin/"
 chmod +x "$ROOTFS/usr/local/bin/configure-router.py"
-ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure-router"
 
-# Install imp CLI
+# Create symlinks for convenience and Python imports
+ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure-router"
+ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure_router.py"
+
+# Install imp CLI and REPL
 cp "$SCRIPT_DIR/imp" "$ROOTFS/usr/local/bin/"
+cp "$SCRIPT_DIR/imp_repl.py" "$ROOTFS/usr/local/bin/"
 chmod +x "$ROOTFS/usr/local/bin/imp"
+chmod +x "$ROOTFS/usr/local/bin/imp_repl.py"
 
 # =============================================================================
 # Enable services
