@@ -300,6 +300,17 @@ if [[ "$INSTALL_MODE" == "image" ]]; then
     zfs mount "${POOL_NAME}/ROOT/${BE_NAME}"
 
     BOOT_ENV="${BE_NAME}"
+
+    # Mount virtual filesystems for chroot operations (image already has directories)
+    log "Mounting virtual filesystems..."
+    mount --rbind /dev  "$ROOTFS/dev"
+    mount --rbind /proc "$ROOTFS/proc"
+    mount --rbind /sys  "$ROOTFS/sys"
+
+    # Mount ESP
+    mkdir -p "$ROOTFS/boot/efi"
+    mount "${PART_PREFIX}2" "$ROOTFS/boot/efi"
+
 else
     # ==========================================================================
     # BOOTSTRAP MODE: Create empty BE and install from internet
@@ -312,18 +323,6 @@ else
 
     BOOT_ENV="debian-initial"
 fi
-
-# =============================================================================
-# Mount virtual filesystems for chroot operations
-# =============================================================================
-log "Mounting virtual filesystems..."
-mount --rbind /dev  "$ROOTFS/dev"
-mount --rbind /proc "$ROOTFS/proc"
-mount --rbind /sys  "$ROOTFS/sys"
-
-# Mount ESP
-mkdir -p "$ROOTFS/boot/efi"
-mount "${PART_PREFIX}2" "$ROOTFS/boot/efi"
 
 if [[ "$INSTALL_MODE" == "bootstrap" ]]; then
     # =========================================================================
@@ -345,6 +344,16 @@ if [[ "$INSTALL_MODE" == "bootstrap" ]]; then
     # Configure the system
     # -------------------------------------------------------------------------
     log "Configuring system..."
+
+    # Mount virtual filesystems for chroot operations (debootstrap created directories)
+    log "Mounting virtual filesystems..."
+    mount --rbind /dev  "$ROOTFS/dev"
+    mount --rbind /proc "$ROOTFS/proc"
+    mount --rbind /sys  "$ROOTFS/sys"
+
+    # Mount ESP
+    mkdir -p "$ROOTFS/boot/efi"
+    mount "${PART_PREFIX}2" "$ROOTFS/boot/efi"
 
     # Temporary DNS for chroot (systemd-resolved will take over after boot)
     rm -f "$ROOTFS/etc/resolv.conf"
