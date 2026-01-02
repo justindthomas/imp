@@ -280,6 +280,9 @@ def build_menu_tree() -> dict:
                 "snapshot": {
                     "commands": ["list", "create", "delete", "export", "import", "rollback"],
                 },
+                "agent": {
+                    "commands": [],
+                },
             },
             "commands": ["show", "status"],
         }
@@ -310,6 +313,7 @@ def cmd_help(ctx: MenuContext, args: list[str], menus: dict) -> None:
     print("    save            Save configuration to JSON")
     print("    apply           Save and regenerate config files")
     print("    reload          Reload from JSON (discard changes)")
+    print("    agent           Enter LLM-powered agent mode (Ollama)")
     print()
 
     # Get current menu
@@ -1729,6 +1733,36 @@ def cmd_snapshot_rollback(ctx: MenuContext, args: list[str]) -> None:
 
 
 # =============================================================================
+# Agent Command
+# =============================================================================
+
+def cmd_agent(ctx: MenuContext, args: list[str]) -> None:
+    """Enter LLM-powered agent mode."""
+    try:
+        from imp_agent import run_agent
+    except ImportError:
+        error("Agent module not available")
+        print("  Ensure imp_agent.py is installed in /usr/local/bin")
+        return
+
+    # Parse args for --ollama-host and --model
+    host = None
+    model = None
+    i = 0
+    while i < len(args):
+        if args[i] in ("--ollama-host", "-h") and i + 1 < len(args):
+            host = args[i + 1]
+            i += 2
+        elif args[i] in ("--model", "-m") and i + 1 < len(args):
+            model = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    run_agent(ctx, host=host, model=model)
+
+
+# =============================================================================
 # Command Dispatcher
 # =============================================================================
 
@@ -1925,6 +1959,11 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
         if subcommand == "rollback":
             cmd_snapshot_rollback(ctx, args[1:])
             return True
+
+    # Agent command - can be invoked from any level
+    if command == "agent":
+        cmd_agent(ctx, args)
+        return True
 
     # Loopback commands
     if path == ["loopbacks"]:

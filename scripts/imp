@@ -715,6 +715,45 @@ def cmd_snapshot_delete(args) -> int:
 
 
 # =============================================================================
+# Agent Command
+# =============================================================================
+
+def cmd_agent(args) -> int:
+    """Enter LLM-powered agent mode."""
+    try:
+        from imp_agent import run_agent, get_ollama_host, get_ollama_model
+    except ImportError as e:
+        error(f"Failed to import agent module: {e}")
+        print("  Ensure imp_agent.py is installed and python3-requests is available")
+        return 1
+
+    # Load config for context
+    try:
+        from imp_repl import MenuContext, load_config, CONFIG_FILE
+        from dataclasses import asdict
+        import json
+
+        ctx = MenuContext()
+        if CONFIG_FILE.exists():
+            try:
+                ctx.config = load_config(CONFIG_FILE)
+                ctx.original_json = json.dumps(asdict(ctx.config), sort_keys=True)
+            except Exception as e:
+                warn(f"Failed to load config: {e}")
+                ctx.config = None
+    except ImportError:
+        error("Failed to import REPL module")
+        return 1
+
+    # Get host and model from args or defaults
+    host = getattr(args, 'ollama_host', None)
+    model = getattr(args, 'model', None)
+
+    run_agent(ctx, host=host, model=model)
+    return 0
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -745,6 +784,7 @@ Examples:
   imp snapshot export NAME --full  Export system + data (for backup)
   imp snapshot import FILE      Import system from file
   imp status                    Show service status
+  imp agent                     Enter LLM-powered agent mode (Ollama)
 """
     )
 
@@ -815,6 +855,12 @@ Examples:
     snapshot_import.add_argument("--persistent", action="store_true", help="Import as persistent data (replaces current)")
     snapshot_import.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
     snapshot_import.set_defaults(func=cmd_snapshot_import)
+
+    # agent subcommand
+    agent_parser = subparsers.add_parser("agent", help="Enter LLM-powered agent mode")
+    agent_parser.add_argument("--ollama-host", help="Ollama host (default: from env/config or localhost:11434)")
+    agent_parser.add_argument("--model", "-m", help="Ollama model (default: from env/config or gpt-oss:120b)")
+    agent_parser.set_defaults(func=cmd_agent)
 
     # Parse and execute
     args = parser.parse_args()

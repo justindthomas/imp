@@ -400,6 +400,53 @@ imp> apply                         # Save and regenerate configs
 - `scripts/imp_repl.py` — REPL implementation with prompt_toolkit
 - `scripts/configure_router.py` — Dataclasses, validation, template rendering
 
+### LLM Agent
+
+The `agent` command provides natural language configuration via Ollama:
+
+```bash
+imp agent                              # Enter agent mode (uses defaults)
+imp agent --ollama-host 192.168.1.100:11434  # Custom Ollama server
+imp agent --model devstral-2:123b      # Use specific model
+```
+
+**Configuration priority** (highest to lowest):
+1. Command arguments (`--ollama-host`, `--model`)
+2. Environment variables (`OLLAMA_HOST`, `OLLAMA_MODEL`)
+3. Config file (`/persistent/config/imp.json`)
+4. Defaults (`localhost:11434`, `gpt-oss:120b`)
+
+**Example session:**
+```
+imp> agent
+[+] Connected to Ollama (gpt-oss:120b)
+Type your request, or 'exit' to return
+
+agent> Add a VLAN 3045 on external with IP 10.45.0.1/24
+
+[Tool: add_subinterface]
+  interface: external
+  vlan_id: 3045
+  ipv4_cidr: 10.45.0.1/24
+  create_lcp: true
+  → Added external.3045 with 10.45.0.1/24
+
+Done! I've added sub-interface external.3045 with IP 10.45.0.1/24.
+The change is staged - use 'apply' to save and regenerate configs.
+
+agent> exit
+imp> apply
+```
+
+**Available tools:**
+- **Read**: `get_config_summary`, `get_interfaces`, `get_loopbacks`, `get_nat_config`, `get_bgp_config`, etc.
+- **Write**: `add_subinterface`, `delete_subinterface`, `add_loopback`, `add_nat_mapping`, `enable_bgp`, etc.
+
+Changes made by the agent are staged (same as manual REPL changes). Use `show` to review and `apply` to persist.
+
+**Key files:**
+- `scripts/imp_agent.py` — Agent implementation with Ollama client
+
 ### VPP Commands
 
 ```bash

@@ -130,7 +130,7 @@ DEBIAN_FRONTEND=noninteractive chroot "$MOUNTPOINT" apt-get install -y -t bookwo
 # Install Python dependencies for configuration scripts
 # =============================================================================
 echo "Installing Python dependencies..."
-DEBIAN_FRONTEND=noninteractive chroot "$MOUNTPOINT" apt-get install -y python3 python3-jinja2 python3-prompt-toolkit
+DEBIAN_FRONTEND=noninteractive chroot "$MOUNTPOINT" apt-get install -y python3 python3-jinja2 python3-prompt-toolkit python3-requests
 
 # =============================================================================
 # Copy configuration templates and scripts
@@ -195,11 +195,13 @@ chmod +x "${MOUNTPOINT}/usr/local/bin/configure-router.py"
 ln -sf configure-router.py "${MOUNTPOINT}/usr/local/bin/configure-router"
 ln -sf configure-router.py "${MOUNTPOINT}/usr/local/bin/configure_router.py"
 
-# IMP CLI utility and REPL
+# IMP CLI utility, REPL, and Agent
 cp "${SCRIPT_DIR}/imp" "${MOUNTPOINT}/usr/local/bin/"
 cp "${SCRIPT_DIR}/imp_repl.py" "${MOUNTPOINT}/usr/local/bin/"
+cp "${SCRIPT_DIR}/imp_agent.py" "${MOUNTPOINT}/usr/local/bin/"
 chmod +x "${MOUNTPOINT}/usr/local/bin/imp"
 chmod +x "${MOUNTPOINT}/usr/local/bin/imp_repl.py"
+chmod +x "${MOUNTPOINT}/usr/local/bin/imp_agent.py"
 
 # =============================================================================
 # Enable services
