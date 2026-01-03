@@ -30,7 +30,7 @@ try:
     from configure_router import (
         RouterConfig, ExternalInterface, InternalInterface, ManagementInterface,
         SubInterface, LoopbackInterface, BVIConfig, BridgeDomainMember,
-        VLANPassthrough, BGPConfig, OSPFConfig, OSPF6Config,
+        VLANPassthrough, BGPConfig, BGPPeer, OSPFConfig, OSPF6Config,
         NATConfig, NATMapping, ACLBypassPair,
         ContainerConfig, CPUConfig,
         validate_ipv4, validate_ipv4_cidr, validate_ipv6, validate_ipv6_cidr,
@@ -265,7 +265,12 @@ def build_menu_tree() -> dict:
                 },
                 "routing": {
                     "children": {
-                        "bgp": {"commands": ["show", "enable", "disable", "set"]},
+                        "bgp": {
+                            "commands": ["show", "enable", "disable"],
+                            "children": {
+                                "peers": {"commands": ["list", "add", "remove"]},
+                            },
+                        },
                         "ospf": {"commands": ["show", "enable", "disable", "set"]},
                         "ospf6": {"commands": ["show", "enable", "disable", "set"]},
                     },
@@ -388,7 +393,8 @@ def cmd_show(ctx: MenuContext, args: list[str]) -> None:
                     print(f"               + {len(iface.subinterfaces)} sub-interface(s)")
 
         if config.bgp.enabled:
-            print(f"  BGP:         AS {config.bgp.asn}, peer {config.bgp.peer_ipv4}")
+            peer_count = len(config.bgp.peers)
+            print(f"  BGP:         AS {config.bgp.asn}, {peer_count} peer{'s' if peer_count != 1 else ''}")
         else:
             print(f"  BGP:         Disabled")
 
@@ -437,6 +443,9 @@ def cmd_show(ctx: MenuContext, args: list[str]) -> None:
 
     elif path == ["routing", "bgp"]:
         _show_bgp(config)
+
+    elif path == ["routing", "bgp", "peers"]:
+        cmd_bgp_peers_list(MenuContext(config=config), [])
 
     elif path == ["routing", "ospf"]:
         _show_ospf(config)
@@ -675,7 +684,8 @@ def _show_routing(config) -> None:
     print(f"{Colors.BOLD}Routing{Colors.NC}")
     print("=" * 50)
     if config.bgp.enabled:
-        print(f"  BGP:    Enabled (AS {config.bgp.asn})")
+        peer_count = len(config.bgp.peers)
+        print(f"  BGP:    Enabled (AS {config.bgp.asn}, {peer_count} peer{'s' if peer_count != 1 else ''})")
     else:
         print(f"  BGP:    Disabled")
     if config.ospf.enabled:
@@ -698,10 +708,14 @@ def _show_bgp(config) -> None:
     if bgp.enabled:
         print(f"  Local AS:   {bgp.asn}")
         print(f"  Router ID:  {bgp.router_id}")
-        print(f"  Peer IPv4:  {bgp.peer_ipv4}")
-        if bgp.peer_ipv6:
-            print(f"  Peer IPv6:  {bgp.peer_ipv6}")
-        print(f"  Peer AS:    {bgp.peer_asn}")
+        print()
+        print(f"  {Colors.BOLD}Peers ({len(bgp.peers)}):{Colors.NC}")
+        if bgp.peers:
+            for peer in bgp.peers:
+                af = "IPv6" if ':' in peer.peer_ip else "IPv4"
+                print(f"    {peer.name}: {peer.peer_ip} AS {peer.peer_asn} ({af})")
+        else:
+            print("    (no peers configured)")
     print()
 
 
@@ -1702,34 +1716,15 @@ def cmd_bgp_enable(ctx: MenuContext, args: list[str]) -> None:
     if not router_id:
         return
 
-    # Peer IPv4
-    peer_ipv4 = prompt_value("Peer IPv4 address", validate_ipv4)
-    if not peer_ipv4:
-        return
-
-    # Peer IPv6
-    peer_ipv6 = prompt_value("Peer IPv6 address", validate_ipv6, required=False)
-
-    # Peer ASN
-    peer_asn_str = prompt_value("Peer AS number")
-    if not peer_asn_str:
-        return
-    try:
-        peer_asn = int(peer_asn_str)
-    except ValueError:
-        error("Invalid AS number")
-        return
-
     # Update config
     ctx.config.bgp.enabled = True
     ctx.config.bgp.asn = asn
     ctx.config.bgp.router_id = router_id
-    ctx.config.bgp.peer_ipv4 = peer_ipv4
-    ctx.config.bgp.peer_ipv6 = peer_ipv6
-    ctx.config.bgp.peer_asn = peer_asn
 
     ctx.dirty = True
-    log(f"Enabled BGP: AS {asn} peering with AS {peer_asn}")
+    log(f"Enabled BGP: AS {asn}")
+    print()
+    info("Use 'routing bgp peers add' to add BGP peers")
 
 
 def cmd_bgp_disable(ctx: MenuContext, args: list[str]) -> None:
@@ -1744,8 +1739,131 @@ def cmd_bgp_disable(ctx: MenuContext, args: list[str]) -> None:
 
     if prompt_yes_no("Disable BGP? This will remove the BGP configuration"):
         ctx.config.bgp.enabled = False
+        ctx.config.bgp.peers = []  # Clear peers when disabling
         ctx.dirty = True
         log("BGP disabled")
+
+
+def cmd_bgp_peers_list(ctx: MenuContext, args: list[str]) -> None:
+    """List all BGP peers."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if not ctx.config.bgp.enabled:
+        warn("BGP is not enabled")
+        return
+
+    print()
+    print(f"{Colors.BOLD}BGP Peers ({len(ctx.config.bgp.peers)}){Colors.NC}")
+    print("=" * 50)
+
+    if not ctx.config.bgp.peers:
+        print("  (no peers configured)")
+    else:
+        for peer in ctx.config.bgp.peers:
+            af = "IPv6" if ':' in peer.peer_ip else "IPv4"
+            print(f"  {peer.name}: {peer.peer_ip} AS {peer.peer_asn} ({af})")
+    print()
+
+
+def cmd_bgp_peers_add(ctx: MenuContext, args: list[str]) -> None:
+    """Add a BGP peer."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if not ctx.config.bgp.enabled:
+        error("BGP is not enabled. Use 'routing bgp enable' first")
+        return
+
+    print()
+    print(f"{Colors.BOLD}Add BGP Peer{Colors.NC}")
+    print()
+
+    # Peer name
+    name = prompt_value("Peer name (e.g., upstream, ix-peer)")
+    if not name:
+        return
+
+    # Peer IP (IPv4 or IPv6)
+    def validate_ip(ip):
+        return validate_ipv4(ip) or validate_ipv6(ip)
+
+    peer_ip = prompt_value("Peer IP address (IPv4 or IPv6)", validate_ip)
+    if not peer_ip:
+        return
+
+    # Check for duplicate
+    for p in ctx.config.bgp.peers:
+        if p.peer_ip == peer_ip:
+            error(f"Peer {peer_ip} already exists")
+            return
+
+    # Peer ASN
+    peer_asn_str = prompt_value("Peer AS number")
+    if not peer_asn_str:
+        return
+    try:
+        peer_asn = int(peer_asn_str)
+    except ValueError:
+        error("Invalid AS number")
+        return
+
+    # Description (optional, defaults to name)
+    description = prompt_value("Description", required=False) or name
+
+    # Create peer
+    peer = BGPPeer(
+        name=name,
+        peer_ip=peer_ip,
+        peer_asn=peer_asn,
+        description=description
+    )
+    ctx.config.bgp.peers.append(peer)
+    ctx.dirty = True
+
+    af = "IPv6" if ':' in peer_ip else "IPv4"
+    log(f"Added {af} BGP peer: {name} ({peer_ip}) AS {peer_asn}")
+
+
+def cmd_bgp_peers_remove(ctx: MenuContext, args: list[str]) -> None:
+    """Remove a BGP peer."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if not ctx.config.bgp.enabled:
+        warn("BGP is not enabled")
+        return
+
+    if not ctx.config.bgp.peers:
+        warn("No peers configured")
+        return
+
+    # Get peer IP from args or prompt
+    if args:
+        peer_ip = args[0]
+    else:
+        print()
+        print("Current peers:")
+        for p in ctx.config.bgp.peers:
+            print(f"  {p.name}: {p.peer_ip}")
+        print()
+        peer_ip = prompt_value("Peer IP to remove")
+        if not peer_ip:
+            return
+
+    # Find and remove peer
+    for p in ctx.config.bgp.peers:
+        if p.peer_ip == peer_ip:
+            if prompt_yes_no(f"Remove peer {p.name} ({peer_ip})?"):
+                ctx.config.bgp.peers.remove(p)
+                ctx.dirty = True
+                log(f"Removed BGP peer {peer_ip}")
+            return
+
+    error(f"Peer {peer_ip} not found")
 
 
 def cmd_ospf_enable(ctx: MenuContext, args: list[str]) -> None:
@@ -2305,7 +2423,7 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             ctx.path = ["nat", "bypass"]
             return True
 
-    # BGP multi-word commands: "routing bgp enable", etc.
+    # BGP multi-word commands: "routing bgp enable", "routing bgp peers add", etc.
     if command == "routing" and args:
         subcommand = args[0].lower()
         if subcommand == "bgp":
@@ -2319,6 +2437,21 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                     return True
                 if subcmd == "show":
                     _show_bgp(ctx.config)
+                    return True
+                if subcmd == "peers":
+                    if len(args) > 2:
+                        peers_cmd = args[2].lower()
+                        if peers_cmd == "list":
+                            cmd_bgp_peers_list(ctx, args[3:])
+                            return True
+                        if peers_cmd == "add":
+                            cmd_bgp_peers_add(ctx, args[3:])
+                            return True
+                        if peers_cmd == "remove":
+                            cmd_bgp_peers_remove(ctx, args[3:])
+                            return True
+                    # Just "routing bgp peers" - navigate there
+                    ctx.path = ["routing", "bgp", "peers"]
                     return True
             # Just "routing bgp" - navigate there
             ctx.path = ["routing", "bgp"]
@@ -2466,6 +2599,30 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             return True
         if command == "disable":
             cmd_bgp_disable(ctx, args)
+            return True
+        # Handle "peers add" when in routing/bgp
+        if command == "peers" and args:
+            peers_cmd = args[0].lower()
+            if peers_cmd == "list":
+                cmd_bgp_peers_list(ctx, args[1:])
+                return True
+            if peers_cmd == "add":
+                cmd_bgp_peers_add(ctx, args[1:])
+                return True
+            if peers_cmd == "remove":
+                cmd_bgp_peers_remove(ctx, args[1:])
+                return True
+
+    # BGP peer commands (when navigated to routing/bgp/peers)
+    if path == ["routing", "bgp", "peers"]:
+        if command == "list":
+            cmd_bgp_peers_list(ctx, args)
+            return True
+        if command == "add":
+            cmd_bgp_peers_add(ctx, args)
+            return True
+        if command == "remove":
+            cmd_bgp_peers_remove(ctx, args)
             return True
 
     # OSPF commands

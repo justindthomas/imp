@@ -16,26 +16,33 @@ ipv6 route {{ iface.ipv6_network }} blackhole
 router bgp {{ bgp.asn }}
  bgp router-id {{ bgp.router_id }}
  no bgp default ipv4-unicast
-{% if bgp.peer_ipv4 %}
- neighbor {{ bgp.peer_ipv4 }} remote-as {{ bgp.peer_asn }}
- neighbor {{ bgp.peer_ipv4 }} description upstream
- neighbor {{ bgp.peer_ipv4 }} update-source {{ external.ipv4 }}
+{# Configure all BGP peers #}
+{% for peer in bgp.peers %}
+ neighbor {{ peer.peer_ip }} remote-as {{ peer.peer_asn }}
+{% if peer.description %}
+ neighbor {{ peer.peer_ip }} description {{ peer.description }}
 {% endif %}
-{% if bgp.peer_ipv6 %}
- neighbor {{ bgp.peer_ipv6 }} remote-as {{ bgp.peer_asn }}
- neighbor {{ bgp.peer_ipv6 }} description upstream-v6
- neighbor {{ bgp.peer_ipv6 }} update-source {{ external.ipv6 }}
+{% if peer.update_source %}
+ neighbor {{ peer.peer_ip }} update-source {{ peer.update_source }}
+{% elif ':' in peer.peer_ip %}
+ neighbor {{ peer.peer_ip }} update-source {{ external.ipv6 }}
+{% else %}
+ neighbor {{ peer.peer_ip }} update-source {{ external.ipv4 }}
 {% endif %}
+{% endfor %}
  !
  address-family ipv4 unicast
   network {{ nat.bgp_prefix }}
   redistribute connected route-map ALLOW_OUT
-{% if bgp.peer_ipv4 %}
-  neighbor {{ bgp.peer_ipv4 }} activate
-  neighbor {{ bgp.peer_ipv4 }} soft-reconfiguration inbound
+{% for peer in bgp.peers %}
+{% if ':' not in peer.peer_ip %}
+  neighbor {{ peer.peer_ip }} activate
+  neighbor {{ peer.peer_ip }} soft-reconfiguration inbound
 {% endif %}
+{% endfor %}
  exit-address-family
-{% if bgp.peer_ipv6 %}
+{% set has_ipv6_peers = bgp.peers | selectattr('peer_ip', 'search', ':') | list | length > 0 %}
+{% if has_ipv6_peers %}
  !
  address-family ipv6 unicast
 {% for iface in internal %}
@@ -44,8 +51,12 @@ router bgp {{ bgp.asn }}
 {% endif %}
 {% endfor %}
   redistribute connected route-map ALLOW_OUT
-  neighbor {{ bgp.peer_ipv6 }} activate
-  neighbor {{ bgp.peer_ipv6 }} soft-reconfiguration inbound
+{% for peer in bgp.peers %}
+{% if ':' in peer.peer_ip %}
+  neighbor {{ peer.peer_ip }} activate
+  neighbor {{ peer.peer_ip }} soft-reconfiguration inbound
+{% endif %}
+{% endfor %}
  exit-address-family
 {% endif %}
 exit

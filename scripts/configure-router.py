@@ -207,14 +207,22 @@ class ManagementInterface:
 
 
 @dataclass
+class BGPPeer:
+    """A single BGP peer."""
+    name: str  # Friendly name (e.g., "upstream", "ix-peer-1")
+    peer_ip: str  # IPv4 or IPv6 address
+    peer_asn: int  # Remote AS number
+    description: Optional[str] = None  # FRR neighbor description
+    update_source: Optional[str] = None  # Source IP (defaults to external.ipv4 or .ipv6)
+
+
+@dataclass
 class BGPConfig:
-    """BGP configuration."""
+    """BGP configuration with multiple peers."""
     enabled: bool = False
-    asn: Optional[int] = None
-    router_id: Optional[str] = None
-    peer_ipv4: Optional[str] = None
-    peer_ipv6: Optional[str] = None
-    peer_asn: Optional[int] = None
+    asn: Optional[int] = None  # Local AS number
+    router_id: Optional[str] = None  # BGP router-id
+    peers: list[BGPPeer] = field(default_factory=list)  # Multiple peers
 
 
 @dataclass
@@ -808,17 +816,46 @@ def phase5_bgp_config(external: ExternalInterface) -> BGPConfig:
     if user_id and validate_ipv4(user_id):
         router_id = user_id
 
-    peer_ipv4 = prompt_ipv4("Peer IPv4 Address")
-    peer_ipv6 = prompt_ipv6("Peer IPv6 Address")
-    peer_asn = prompt_int("  Peer AS Number", min_val=1, max_val=4294967295)
+    # Collect BGP peers
+    peers = []
+    print()
+    print(f"  {Colors.BOLD}BGP Peers{Colors.NC}")
+    print("  Add one or more BGP peers. You can add more later via 'imp' REPL.")
+    print()
+
+    while True:
+        print(f"  {Colors.BOLD}Peer #{len(peers) + 1}{Colors.NC}")
+        peer_name = input("  Peer name (e.g., upstream, ix-peer): ").strip()
+        if not peer_name:
+            peer_name = f"peer{len(peers) + 1}"
+
+        # Accept either IPv4 or IPv6
+        while True:
+            peer_ip = input("  Peer IP Address (IPv4 or IPv6): ").strip()
+            if validate_ipv4(peer_ip) or validate_ipv6(peer_ip):
+                break
+            warn("Invalid IP address")
+
+        peer_asn = prompt_int("  Peer AS Number", min_val=1, max_val=4294967295)
+
+        peers.append(BGPPeer(
+            name=peer_name,
+            peer_ip=peer_ip,
+            peer_asn=peer_asn,
+            description=peer_name
+        ))
+
+        af = "IPv6" if ':' in peer_ip else "IPv4"
+        info(f"Added {af} peer: {peer_name} ({peer_ip}) AS {peer_asn}")
+
+        if not prompt_yes_no("Add another BGP peer?", default=False):
+            break
 
     return BGPConfig(
         enabled=True,
         asn=asn,
         router_id=router_id,
-        peer_ipv4=peer_ipv4,
-        peer_ipv6=peer_ipv6,
-        peer_asn=peer_asn
+        peers=peers
     )
 
 
@@ -1266,9 +1303,10 @@ def phase7_confirm(config: RouterConfig) -> bool:
     if config.bgp.enabled:
         print(f"  BGP AS:     {config.bgp.asn}")
         print(f"  Router ID:  {config.bgp.router_id}")
-        print(f"  Peer:       {config.bgp.peer_ipv4} (AS {config.bgp.peer_asn})")
-        if config.bgp.peer_ipv6:
-            print(f"              {config.bgp.peer_ipv6}")
+        print(f"  Peers ({len(config.bgp.peers)}):")
+        for peer in config.bgp.peers:
+            af = "IPv6" if ':' in peer.peer_ip else "IPv4"
+            print(f"    {peer.name}: {peer.peer_ip} AS {peer.peer_asn} ({af})")
     else:
         print(f"  Static routing (gateway: {config.external.ipv4_gateway})")
 
@@ -1587,12 +1625,22 @@ def load_config(config_file: Path) -> RouterConfig:
         default_originate=ospf6_data.get('default_originate', False),
     )
 
+    # Handle BGP config with peers list
+    bgp_data = data.get('bgp', {})
+    bgp_peers = [BGPPeer(**p) for p in bgp_data.get('peers', [])]
+    bgp = BGPConfig(
+        enabled=bgp_data.get('enabled', False),
+        asn=bgp_data.get('asn'),
+        router_id=bgp_data.get('router_id'),
+        peers=bgp_peers,
+    )
+
     config = RouterConfig(
         hostname=data.get('hostname', 'appliance'),
         management=ManagementInterface(**data['management']),
         external=external,
         internal=internal,
-        bgp=BGPConfig(**data['bgp']),
+        bgp=bgp,
         ospf=ospf,
         ospf6=ospf6,
         nat=nat,

@@ -371,7 +371,7 @@ def build_tools() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "get_bgp_config",
-                "description": "Get BGP configuration including ASN, router ID, and peer settings",
+                "description": "Get BGP configuration including ASN, router ID, and all configured peers. Check this before adding or removing peers.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -647,8 +647,8 @@ def build_tools() -> list[dict]:
         {
             "type": "function",
             "function": {
-                "name": "enable_bgp",
-                "description": "Enable and configure BGP peering",
+                "name": "configure_bgp",
+                "description": "Enable and configure BGP with local ASN and router-id. Does not modify existing peers. Use add_bgp_peer to add peers.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -659,21 +659,55 @@ def build_tools() -> list[dict]:
                         "router_id": {
                             "type": "string",
                             "description": "Router ID (IPv4 address)"
-                        },
-                        "peer_ipv4": {
+                        }
+                    },
+                    "required": ["asn", "router_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "add_bgp_peer",
+                "description": "Add a BGP peer to the configuration. Supports both IPv4 and IPv6 peers. BGP must be enabled first.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
                             "type": "string",
-                            "description": "Peer IPv4 address"
+                            "description": "Friendly name for this peer (e.g., 'upstream', 'ix-peer-1')"
+                        },
+                        "peer_ip": {
+                            "type": "string",
+                            "description": "Peer IP address (IPv4 or IPv6)"
                         },
                         "peer_asn": {
                             "type": "integer",
                             "description": "Peer AS number"
                         },
-                        "peer_ipv6": {
+                        "description": {
                             "type": "string",
-                            "description": "Peer IPv6 address (optional)"
+                            "description": "Optional description for FRR config (defaults to name)"
                         }
                     },
-                    "required": ["asn", "router_id", "peer_ipv4", "peer_asn"]
+                    "required": ["name", "peer_ip", "peer_asn"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "remove_bgp_peer",
+                "description": "Remove a BGP peer by IP address",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "peer_ip": {
+                            "type": "string",
+                            "description": "IP address of peer to remove"
+                        }
+                    },
+                    "required": ["peer_ip"]
                 }
             }
         },
@@ -681,7 +715,7 @@ def build_tools() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "disable_bgp",
-                "description": "Disable BGP",
+                "description": "Disable BGP and remove all peers",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -1117,14 +1151,18 @@ def tool_get_bgp_config(config) -> str:
         return "BGP is disabled"
 
     lines = [
-        f"Enabled: {bgp.enabled}",
-        f"Local AS: {bgp.asn}",
-        f"Router ID: {bgp.router_id}",
-        f"Peer IPv4: {bgp.peer_ipv4}",
-        f"Peer AS: {bgp.peer_asn}",
+        "BGP Configuration:",
+        f"  Enabled: {bgp.enabled}",
+        f"  Local AS: {bgp.asn}",
+        f"  Router ID: {bgp.router_id}",
+        f"  Peers ({len(bgp.peers)}):",
     ]
-    if bgp.peer_ipv6:
-        lines.append(f"Peer IPv6: {bgp.peer_ipv6}")
+    if bgp.peers:
+        for p in bgp.peers:
+            af = "IPv6" if ':' in p.peer_ip else "IPv4"
+            lines.append(f"    - {p.name}: {p.peer_ip} AS {p.peer_asn} ({af})")
+    else:
+        lines.append("    (no peers configured)")
 
     return "\n".join(lines)
 
@@ -1140,7 +1178,7 @@ def _get_config_classes():
     try:
         from configure_router import (
             SubInterface, LoopbackInterface, NATMapping, ACLBypassPair,
-            VLANPassthrough, validate_ipv4_cidr, validate_ipv6_cidr, parse_cidr
+            VLANPassthrough, BGPPeer, validate_ipv4_cidr, validate_ipv6_cidr, parse_cidr
         )
         return {
             'SubInterface': SubInterface,
@@ -1148,6 +1186,7 @@ def _get_config_classes():
             'NATMapping': NATMapping,
             'ACLBypassPair': ACLBypassPair,
             'VLANPassthrough': VLANPassthrough,
+            'BGPPeer': BGPPeer,
             'validate_ipv4_cidr': validate_ipv4_cidr,
             'validate_ipv6_cidr': validate_ipv6_cidr,
             'parse_cidr': parse_cidr,
@@ -1433,42 +1472,86 @@ def tool_delete_vlan_passthrough(config, ctx, vlan_id: int) -> str:
     return f"Deleted VLAN passthrough {vlan_id}"
 
 
-def tool_enable_bgp(config, ctx, asn: int, router_id: str, peer_ipv4: str,
-                    peer_asn: int, peer_ipv6: str = None) -> str:
-    """Enable BGP."""
-    classes = _get_config_classes()
-    if not classes:
-        return "Error: Configuration module not available"
-
-    # Simple validation (could be more thorough)
+def tool_configure_bgp(config, ctx, asn: int, router_id: str) -> str:
+    """Configure BGP ASN and router-id without touching peers."""
     try:
         import ipaddress
         ipaddress.IPv4Address(router_id)
-        ipaddress.IPv4Address(peer_ipv4)
-        if peer_ipv6:
-            ipaddress.IPv6Address(peer_ipv6)
     except Exception as e:
-        return f"Error: Invalid IP address: {e}"
+        return f"Error: Invalid router ID: {e}"
 
     config.bgp.enabled = True
     config.bgp.asn = asn
     config.bgp.router_id = router_id
-    config.bgp.peer_ipv4 = peer_ipv4
-    config.bgp.peer_asn = peer_asn
-    config.bgp.peer_ipv6 = peer_ipv6
     ctx.dirty = True
 
-    return f"Enabled BGP: AS {asn} peering with {peer_ipv4} (AS {peer_asn})"
+    return f"Configured BGP: AS {asn}, router-id {router_id}"
+
+
+def tool_add_bgp_peer(config, ctx, name: str, peer_ip: str, peer_asn: int,
+                      description: str = None) -> str:
+    """Add a BGP peer."""
+    classes = _get_config_classes()
+    if not classes:
+        return "Error: Configuration module not available"
+
+    if not config.bgp.enabled:
+        return "Error: BGP is not enabled. Use configure_bgp first."
+
+    # Validate IP address
+    try:
+        import ipaddress
+        # Try IPv4 first, then IPv6
+        try:
+            ipaddress.IPv4Address(peer_ip)
+            af = "IPv4"
+        except ipaddress.AddressValueError:
+            ipaddress.IPv6Address(peer_ip)
+            af = "IPv6"
+    except Exception as e:
+        return f"Error: Invalid peer IP address: {e}"
+
+    # Check for duplicate
+    for p in config.bgp.peers:
+        if p.peer_ip == peer_ip:
+            return f"Error: Peer {peer_ip} already exists"
+
+    BGPPeer = classes['BGPPeer']
+    peer = BGPPeer(
+        name=name,
+        peer_ip=peer_ip,
+        peer_asn=peer_asn,
+        description=description or name
+    )
+    config.bgp.peers.append(peer)
+    ctx.dirty = True
+
+    return f"Added {af} BGP peer: {name} ({peer_ip}) AS {peer_asn}"
+
+
+def tool_remove_bgp_peer(config, ctx, peer_ip: str) -> str:
+    """Remove a BGP peer by IP address."""
+    if not config.bgp.enabled:
+        return "Error: BGP is not enabled"
+
+    for p in config.bgp.peers:
+        if p.peer_ip == peer_ip:
+            config.bgp.peers.remove(p)
+            ctx.dirty = True
+            return f"Removed BGP peer {peer_ip}"
+
+    return f"Error: Peer {peer_ip} not found"
 
 
 def tool_disable_bgp(config, ctx) -> str:
-    """Disable BGP."""
+    """Disable BGP and remove all peers."""
     if not config.bgp.enabled:
         return "BGP is already disabled"
 
     config.bgp.enabled = False
+    config.bgp.peers = []  # Clear all peers
     ctx.dirty = True
-    return "Disabled BGP"
+    return "Disabled BGP and removed all peers"
 
 
 def tool_get_ospf_config(config) -> str:
@@ -1847,14 +1930,24 @@ def execute_tool(name: str, args: dict, config, ctx) -> str:
             )
         if name == "delete_vlan_passthrough":
             return tool_delete_vlan_passthrough(config, ctx, vlan_id=args.get("vlan_id", 0))
-        if name == "enable_bgp":
-            return tool_enable_bgp(
+        if name == "configure_bgp":
+            return tool_configure_bgp(
                 config, ctx,
                 asn=args.get("asn", 0),
-                router_id=args.get("router_id", ""),
-                peer_ipv4=args.get("peer_ipv4", ""),
+                router_id=args.get("router_id", "")
+            )
+        if name == "add_bgp_peer":
+            return tool_add_bgp_peer(
+                config, ctx,
+                name=args.get("name", ""),
+                peer_ip=args.get("peer_ip", ""),
                 peer_asn=args.get("peer_asn", 0),
-                peer_ipv6=args.get("peer_ipv6")
+                description=args.get("description")
+            )
+        if name == "remove_bgp_peer":
+            return tool_remove_bgp_peer(
+                config, ctx,
+                peer_ip=args.get("peer_ip", "")
             )
         if name == "disable_bgp":
             return tool_disable_bgp(config, ctx)
@@ -1933,6 +2026,12 @@ When the user asks for "a VLAN interface" or "BVI" without specifying details, a
 - If they just need an IP address on the router → suggest loopback
 - If they need it connected to a physical port → ask which interface and VLAN ID
 - If they need to bridge multiple ports → that's a BVI with members
+
+BGP supports multiple peers:
+- Use configure_bgp to set ASN and router-id (does not affect existing peers)
+- Use add_bgp_peer to add individual peers (BGP must be enabled first)
+- Use remove_bgp_peer to remove peers by IP address
+- Use get_bgp_config to see all configured peers before making changes
 
 Important notes:
 - Changes are staged until 'apply'. You cannot apply changes directly.
