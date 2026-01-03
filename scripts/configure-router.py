@@ -93,6 +93,11 @@ class SubInterface:
     ipv6: Optional[str] = None
     ipv6_prefix: Optional[int] = None
     create_lcp: bool = True  # Create linux_cp TAP for FRR visibility
+    # OSPF settings
+    ospf_area: Optional[int] = None  # OSPF area (None = not participating)
+    ospf_passive: bool = False  # Passive interface (no hellos)
+    ospf6_area: Optional[int] = None  # OSPFv3 area (None = not participating)
+    ospf6_passive: bool = False  # Passive for OSPFv3
 
 
 @dataclass
@@ -105,6 +110,11 @@ class LoopbackInterface:
     ipv6: Optional[str] = None
     ipv6_prefix: Optional[int] = None
     create_lcp: bool = True  # Create linux_cp TAP for FRR visibility
+    # OSPF settings
+    ospf_area: Optional[int] = None  # OSPF area (None = not participating)
+    ospf_passive: bool = False  # Passive interface (no hellos)
+    ospf6_area: Optional[int] = None  # OSPFv3 area (None = not participating)
+    ospf6_passive: bool = False  # Passive for OSPFv3
 
 
 @dataclass
@@ -125,6 +135,11 @@ class BVIConfig:
     ipv6: Optional[str] = None
     ipv6_prefix: Optional[int] = None
     create_lcp: bool = True  # Create linux_cp TAP for FRR visibility
+    # OSPF settings
+    ospf_area: Optional[int] = None  # OSPF area (None = not participating)
+    ospf_passive: bool = False  # Passive interface (no hellos)
+    ospf6_area: Optional[int] = None  # OSPFv3 area (None = not participating)
+    ospf6_passive: bool = False  # Passive for OSPFv3
 
 
 @dataclass
@@ -139,6 +154,11 @@ class ExternalInterface:
     ipv6_prefix: Optional[int] = None
     ipv6_gateway: Optional[str] = None
     subinterfaces: list[SubInterface] = field(default_factory=list)
+    # OSPF settings
+    ospf_area: Optional[int] = None  # OSPF area (None = not participating)
+    ospf_passive: bool = False  # Passive interface (no hellos)
+    ospf6_area: Optional[int] = None  # OSPFv3 area (None = not participating)
+    ospf6_passive: bool = False  # Passive for OSPFv3
 
 
 @dataclass
@@ -155,6 +175,11 @@ class InternalInterface:
     ipv6_network: Optional[str] = None  # Computed: network for BGP announcement
     ipv6_ra_prefix: Optional[str] = None  # Computed: RA prefix (typically /64)
     subinterfaces: list[SubInterface] = field(default_factory=list)
+    # OSPF settings
+    ospf_area: Optional[int] = None  # OSPF area (None = not participating)
+    ospf_passive: bool = False  # Passive interface (no hellos)
+    ospf6_area: Optional[int] = None  # OSPFv3 area (None = not participating)
+    ospf6_passive: bool = False  # Passive for OSPFv3
 
     def __post_init__(self):
         # Compute network address from IP
@@ -190,6 +215,22 @@ class BGPConfig:
     peer_ipv4: Optional[str] = None
     peer_ipv6: Optional[str] = None
     peer_asn: Optional[int] = None
+
+
+@dataclass
+class OSPFConfig:
+    """OSPF (IPv4) configuration."""
+    enabled: bool = False
+    router_id: Optional[str] = None  # Falls back to BGP router-id if None
+    default_originate: bool = False  # Inject default route
+
+
+@dataclass
+class OSPF6Config:
+    """OSPFv3 (IPv6) configuration."""
+    enabled: bool = False
+    router_id: Optional[str] = None  # Falls back to OSPF/BGP router-id if None
+    default_originate: bool = False  # Inject default route
 
 
 @dataclass
@@ -353,6 +394,8 @@ class RouterConfig:
     external: Optional[ExternalInterface] = None
     internal: list[InternalInterface] = field(default_factory=list)
     bgp: BGPConfig = field(default_factory=BGPConfig)
+    ospf: OSPFConfig = field(default_factory=OSPFConfig)
+    ospf6: OSPF6Config = field(default_factory=OSPF6Config)
     nat: NATConfig = field(default_factory=NATConfig)
     container: ContainerConfig = field(default_factory=ContainerConfig)
     cpu: CPUConfig = field(default_factory=CPUConfig)
@@ -1319,6 +1362,8 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path)
         'external': config.external,
         'internal': config.internal,
         'bgp': config.bgp,
+        'ospf': config.ospf,
+        'ospf6': config.ospf6,
         'nat': config.nat,
         'container': config.container,
         'cpu': config.cpu,
@@ -1479,7 +1524,11 @@ def load_config(config_file: Path) -> RouterConfig:
             ipv4_prefix=bvi_data.get('ipv4_prefix'),
             ipv6=bvi_data.get('ipv6'),
             ipv6_prefix=bvi_data.get('ipv6_prefix'),
-            create_lcp=bvi_data.get('create_lcp', True)
+            create_lcp=bvi_data.get('create_lcp', True),
+            ospf_area=bvi_data.get('ospf_area'),
+            ospf_passive=bvi_data.get('ospf_passive', False),
+            ospf6_area=bvi_data.get('ospf6_area'),
+            ospf6_passive=bvi_data.get('ospf6_passive', False),
         ))
 
     # Always re-detect CPU allocation for current hardware
@@ -1497,7 +1546,11 @@ def load_config(config_file: Path) -> RouterConfig:
         ipv6=ext_data.get('ipv6'),
         ipv6_prefix=ext_data.get('ipv6_prefix'),
         ipv6_gateway=ext_data.get('ipv6_gateway'),
-        subinterfaces=ext_subifs
+        subinterfaces=ext_subifs,
+        ospf_area=ext_data.get('ospf_area'),
+        ospf_passive=ext_data.get('ospf_passive', False),
+        ospf6_area=ext_data.get('ospf6_area'),
+        ospf6_passive=ext_data.get('ospf6_passive', False),
     )
 
     # Reconstruct internal interfaces with subinterfaces
@@ -1512,8 +1565,27 @@ def load_config(config_file: Path) -> RouterConfig:
             ipv4_prefix=i_data['ipv4_prefix'],
             ipv6=i_data.get('ipv6'),
             ipv6_prefix=i_data.get('ipv6_prefix'),
-            subinterfaces=int_subifs
+            subinterfaces=int_subifs,
+            ospf_area=i_data.get('ospf_area'),
+            ospf_passive=i_data.get('ospf_passive', False),
+            ospf6_area=i_data.get('ospf6_area'),
+            ospf6_passive=i_data.get('ospf6_passive', False),
         ))
+
+    # Handle OSPF configs (may not exist in older configs)
+    ospf_data = data.get('ospf', {})
+    ospf = OSPFConfig(
+        enabled=ospf_data.get('enabled', False),
+        router_id=ospf_data.get('router_id'),
+        default_originate=ospf_data.get('default_originate', False),
+    )
+
+    ospf6_data = data.get('ospf6', {})
+    ospf6 = OSPF6Config(
+        enabled=ospf6_data.get('enabled', False),
+        router_id=ospf6_data.get('router_id'),
+        default_originate=ospf6_data.get('default_originate', False),
+    )
 
     config = RouterConfig(
         hostname=data.get('hostname', 'appliance'),
@@ -1521,6 +1593,8 @@ def load_config(config_file: Path) -> RouterConfig:
         external=external,
         internal=internal,
         bgp=BGPConfig(**data['bgp']),
+        ospf=ospf,
+        ospf6=ospf6,
         nat=nat,
         container=ContainerConfig(**data['container']),
         cpu=cpu,

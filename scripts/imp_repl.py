@@ -30,7 +30,8 @@ try:
     from configure_router import (
         RouterConfig, ExternalInterface, InternalInterface, ManagementInterface,
         SubInterface, LoopbackInterface, BVIConfig, BridgeDomainMember,
-        VLANPassthrough, BGPConfig, NATConfig, NATMapping, ACLBypassPair,
+        VLANPassthrough, BGPConfig, OSPFConfig, OSPF6Config,
+        NATConfig, NATMapping, ACLBypassPair,
         ContainerConfig, CPUConfig,
         validate_ipv4, validate_ipv4_cidr, validate_ipv6, validate_ipv6_cidr,
         parse_cidr, render_templates, apply_configs, save_config, load_config,
@@ -190,23 +191,35 @@ class MenuCompleter(Completer):
             completions.extend(i.vpp_name for i in self.ctx.config.internal)
 
         if len(effective_path) == 3 and effective_path[:2] == ["interfaces", "internal"]:
-            # Add subinterfaces submenu for internal interfaces
+            # Add subinterfaces submenu and OSPF commands for internal interfaces
             completions.append("subinterfaces")
-            completions.extend(["show"])
+            completions.extend(["show", "ospf", "ospf6"])
+
+        if effective_path == ["interfaces", "external"]:
+            # Add OSPF commands for external interface
+            completions.extend(["ospf", "ospf6"])
 
         if len(effective_path) >= 3 and effective_path[-1] == "subinterfaces":
             # Add sub-interface commands
             completions.extend(["list", "add", "delete"])
 
         if effective_path == ["loopbacks"] and self.ctx.config:
-            # Add loopback instance numbers for delete completion
+            # Add loopback instance numbers for delete/ospf completion
             for lo in self.ctx.config.loopbacks:
                 completions.append(str(lo.instance))
 
+        if len(effective_path) == 2 and effective_path[0] == "loopbacks":
+            # Add OSPF commands for specific loopback
+            completions.extend(["ospf", "ospf6"])
+
         if effective_path == ["bvi"] and self.ctx.config:
-            # Add BVI bridge IDs for delete completion
+            # Add BVI bridge IDs for delete/ospf completion
             for bvi in self.ctx.config.bvi_domains:
                 completions.append(str(bvi.bridge_id))
+
+        if len(effective_path) == 2 and effective_path[0] == "bvi":
+            # Add OSPF commands for specific BVI
+            completions.extend(["ospf", "ospf6"])
 
         if effective_path == ["vlan-passthrough"] and self.ctx.config:
             # Add VLAN IDs for delete completion
@@ -253,6 +266,8 @@ def build_menu_tree() -> dict:
                 "routing": {
                     "children": {
                         "bgp": {"commands": ["show", "enable", "disable", "set"]},
+                        "ospf": {"commands": ["show", "enable", "disable", "set"]},
+                        "ospf6": {"commands": ["show", "enable", "disable", "set"]},
                     },
                     "commands": ["show"],
                 },
@@ -422,6 +437,12 @@ def cmd_show(ctx: MenuContext, args: list[str]) -> None:
 
     elif path == ["routing", "bgp"]:
         _show_bgp(config)
+
+    elif path == ["routing", "ospf"]:
+        _show_ospf(config)
+
+    elif path == ["routing", "ospf6"]:
+        _show_ospf6(config)
 
     elif path == ["nat"]:
         _show_nat(config)
@@ -654,9 +675,17 @@ def _show_routing(config) -> None:
     print(f"{Colors.BOLD}Routing{Colors.NC}")
     print("=" * 50)
     if config.bgp.enabled:
-        print(f"  BGP: Enabled (AS {config.bgp.asn})")
+        print(f"  BGP:    Enabled (AS {config.bgp.asn})")
     else:
-        print(f"  BGP: Disabled")
+        print(f"  BGP:    Disabled")
+    if config.ospf.enabled:
+        print(f"  OSPF:   Enabled (router-id {config.ospf.router_id or config.bgp.router_id})")
+    else:
+        print(f"  OSPF:   Disabled")
+    if config.ospf6.enabled:
+        print(f"  OSPFv3: Enabled (router-id {config.ospf6.router_id or config.ospf.router_id or config.bgp.router_id})")
+    else:
+        print(f"  OSPFv3: Disabled")
     print()
 
 
@@ -673,6 +702,108 @@ def _show_bgp(config) -> None:
         if bgp.peer_ipv6:
             print(f"  Peer IPv6:  {bgp.peer_ipv6}")
         print(f"  Peer AS:    {bgp.peer_asn}")
+    print()
+
+
+def _show_ospf(config) -> None:
+    """Show OSPF configuration."""
+    print(f"{Colors.BOLD}OSPF Configuration{Colors.NC}")
+    print("=" * 50)
+    ospf = config.ospf
+    print(f"  Enabled:          {ospf.enabled}")
+    if ospf.enabled:
+        router_id = ospf.router_id or config.bgp.router_id
+        print(f"  Router ID:        {router_id}")
+        print(f"  Default Originate: {ospf.default_originate}")
+        print()
+        print(f"  {Colors.BOLD}Interface Areas:{Colors.NC}")
+        has_areas = False
+        # Loopbacks
+        for loop in config.loopbacks:
+            if loop.ospf_area is not None:
+                passive = " (passive)" if loop.ospf_passive else ""
+                print(f"    loop{loop.instance}: area {loop.ospf_area}{passive}")
+                has_areas = True
+        # Internal interfaces
+        for iface in config.internal:
+            if iface.ospf_area is not None:
+                passive = " (passive)" if iface.ospf_passive else ""
+                print(f"    {iface.vpp_name}: area {iface.ospf_area}{passive}")
+                has_areas = True
+            for sub in iface.subinterfaces:
+                if sub.ospf_area is not None:
+                    passive = " (passive)" if sub.ospf_passive else ""
+                    print(f"    {iface.vpp_name}.{sub.vlan_id}: area {sub.ospf_area}{passive}")
+                    has_areas = True
+        # External interface
+        if config.external and config.external.ospf_area is not None:
+            passive = " (passive)" if config.external.ospf_passive else ""
+            print(f"    external: area {config.external.ospf_area}{passive}")
+            has_areas = True
+        for sub in (config.external.subinterfaces if config.external else []):
+            if sub.ospf_area is not None:
+                passive = " (passive)" if sub.ospf_passive else ""
+                print(f"    external.{sub.vlan_id}: area {sub.ospf_area}{passive}")
+                has_areas = True
+        # BVI interfaces
+        for bvi in config.bvi_domains:
+            if bvi.ospf_area is not None:
+                passive = " (passive)" if bvi.ospf_passive else ""
+                print(f"    loop{bvi.bridge_id}: area {bvi.ospf_area}{passive}")
+                has_areas = True
+        if not has_areas:
+            print("    (no interfaces configured)")
+    print()
+
+
+def _show_ospf6(config) -> None:
+    """Show OSPFv3 configuration."""
+    print(f"{Colors.BOLD}OSPFv3 Configuration{Colors.NC}")
+    print("=" * 50)
+    ospf6 = config.ospf6
+    print(f"  Enabled:          {ospf6.enabled}")
+    if ospf6.enabled:
+        router_id = ospf6.router_id or config.ospf.router_id or config.bgp.router_id
+        print(f"  Router ID:        {router_id}")
+        print(f"  Default Originate: {ospf6.default_originate}")
+        print()
+        print(f"  {Colors.BOLD}Interface Areas:{Colors.NC}")
+        has_areas = False
+        # Loopbacks
+        for loop in config.loopbacks:
+            if loop.ospf6_area is not None:
+                passive = " (passive)" if loop.ospf6_passive else ""
+                print(f"    loop{loop.instance}: area {loop.ospf6_area}{passive}")
+                has_areas = True
+        # Internal interfaces
+        for iface in config.internal:
+            if iface.ospf6_area is not None:
+                passive = " (passive)" if iface.ospf6_passive else ""
+                print(f"    {iface.vpp_name}: area {iface.ospf6_area}{passive}")
+                has_areas = True
+            for sub in iface.subinterfaces:
+                if sub.ospf6_area is not None:
+                    passive = " (passive)" if sub.ospf6_passive else ""
+                    print(f"    {iface.vpp_name}.{sub.vlan_id}: area {sub.ospf6_area}{passive}")
+                    has_areas = True
+        # External interface
+        if config.external and config.external.ospf6_area is not None:
+            passive = " (passive)" if config.external.ospf6_passive else ""
+            print(f"    external: area {config.external.ospf6_area}{passive}")
+            has_areas = True
+        for sub in (config.external.subinterfaces if config.external else []):
+            if sub.ospf6_area is not None:
+                passive = " (passive)" if sub.ospf6_passive else ""
+                print(f"    external.{sub.vlan_id}: area {sub.ospf6_area}{passive}")
+                has_areas = True
+        # BVI interfaces
+        for bvi in config.bvi_domains:
+            if bvi.ospf6_area is not None:
+                passive = " (passive)" if bvi.ospf6_passive else ""
+                print(f"    loop{bvi.bridge_id}: area {bvi.ospf6_area}{passive}")
+                has_areas = True
+        if not has_areas:
+            print("    (no interfaces configured)")
     print()
 
 
@@ -1617,6 +1748,122 @@ def cmd_bgp_disable(ctx: MenuContext, args: list[str]) -> None:
         log("BGP disabled")
 
 
+def cmd_ospf_enable(ctx: MenuContext, args: list[str]) -> None:
+    """Enable and configure OSPF."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if ctx.config.ospf.enabled:
+        warn("OSPF is already enabled")
+        return
+
+    print()
+    print(f"{Colors.BOLD}Enable OSPF{Colors.NC}")
+    print()
+
+    # Router ID - default to BGP router-id if available
+    default_id = ctx.config.bgp.router_id if ctx.config.bgp.enabled else None
+    if default_id:
+        print(f"  Router ID [{default_id}]: ", end="")
+        router_id = input().strip() or default_id
+    else:
+        router_id = prompt_value("Router ID (IPv4 address)", validate_ipv4)
+        if not router_id:
+            return
+
+    if not validate_ipv4(router_id):
+        error("Invalid IPv4 address")
+        return
+
+    # Default originate
+    default_originate = prompt_yes_no("Inject default route (default-information originate)?", default=False)
+
+    # Update config
+    ctx.config.ospf.enabled = True
+    ctx.config.ospf.router_id = router_id
+    ctx.config.ospf.default_originate = default_originate
+
+    ctx.dirty = True
+    log(f"Enabled OSPF with router-id {router_id}")
+    print()
+    info("Use 'interfaces <name> ospf area <n>' to add interfaces to OSPF")
+
+
+def cmd_ospf_disable(ctx: MenuContext, args: list[str]) -> None:
+    """Disable OSPF."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if not ctx.config.ospf.enabled:
+        warn("OSPF is already disabled")
+        return
+
+    if prompt_yes_no("Disable OSPF? This will remove the OSPF configuration"):
+        ctx.config.ospf.enabled = False
+        ctx.dirty = True
+        log("OSPF disabled")
+
+
+def cmd_ospf6_enable(ctx: MenuContext, args: list[str]) -> None:
+    """Enable and configure OSPFv3."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if ctx.config.ospf6.enabled:
+        warn("OSPFv3 is already enabled")
+        return
+
+    print()
+    print(f"{Colors.BOLD}Enable OSPFv3{Colors.NC}")
+    print()
+
+    # Router ID - default to OSPF or BGP router-id if available
+    default_id = ctx.config.ospf.router_id or ctx.config.bgp.router_id
+    if default_id:
+        print(f"  Router ID [{default_id}]: ", end="")
+        router_id = input().strip() or default_id
+    else:
+        router_id = prompt_value("Router ID (IPv4 address)", validate_ipv4)
+        if not router_id:
+            return
+
+    if not validate_ipv4(router_id):
+        error("Invalid IPv4 address")
+        return
+
+    # Default originate
+    default_originate = prompt_yes_no("Inject default route (default-information originate)?", default=False)
+
+    # Update config
+    ctx.config.ospf6.enabled = True
+    ctx.config.ospf6.router_id = router_id
+    ctx.config.ospf6.default_originate = default_originate
+
+    ctx.dirty = True
+    log(f"Enabled OSPFv3 with router-id {router_id}")
+    print()
+    info("Use 'interfaces <name> ospf6 area <n>' to add interfaces to OSPFv3")
+
+
+def cmd_ospf6_disable(ctx: MenuContext, args: list[str]) -> None:
+    """Disable OSPFv3."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if not ctx.config.ospf6.enabled:
+        warn("OSPFv3 is already disabled")
+        return
+
+    if prompt_yes_no("Disable OSPFv3? This will remove the OSPFv3 configuration"):
+        ctx.config.ospf6.enabled = False
+        ctx.dirty = True
+        log("OSPFv3 disabled")
+
+
 # =============================================================================
 # Shell Commands
 # =============================================================================
@@ -1845,6 +2092,75 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_shell_nat(ctx, args)
             return True
 
+    # Multi-word commands from any level: "interfaces <name> ospf area <n>", etc.
+    if command == "interfaces" and args and ctx.config:
+        subcommand = args[0].lower()
+        # Check for internal interface with ospf command: "interfaces internal0 ospf area 0"
+        iface = next((i for i in ctx.config.internal if i.vpp_name == subcommand), None)
+        if iface and len(args) >= 2:
+            if args[1].lower() == "ospf" and len(args) >= 4 and args[2].lower() == "area":
+                try:
+                    area = int(args[3])
+                    iface.ospf_area = area
+                    ctx.dirty = True
+                    log(f"Set {iface.vpp_name} OSPF area to {area}")
+                    return True
+                except ValueError:
+                    error("Invalid area number")
+                    return True
+            if args[1].lower() == "ospf" and len(args) >= 3 and args[2].lower() == "passive":
+                iface.ospf_passive = True
+                ctx.dirty = True
+                log(f"Set {iface.vpp_name} as OSPF passive")
+                return True
+            if args[1].lower() == "ospf6" and len(args) >= 4 and args[2].lower() == "area":
+                try:
+                    area = int(args[3])
+                    iface.ospf6_area = area
+                    ctx.dirty = True
+                    log(f"Set {iface.vpp_name} OSPFv3 area to {area}")
+                    return True
+                except ValueError:
+                    error("Invalid area number")
+                    return True
+            if args[1].lower() == "ospf6" and len(args) >= 3 and args[2].lower() == "passive":
+                iface.ospf6_passive = True
+                ctx.dirty = True
+                log(f"Set {iface.vpp_name} as OSPFv3 passive")
+                return True
+        # Check for external interface with ospf command: "interfaces external ospf area 0"
+        if subcommand == "external" and ctx.config.external and len(args) >= 2:
+            if args[1].lower() == "ospf" and len(args) >= 4 and args[2].lower() == "area":
+                try:
+                    area = int(args[3])
+                    ctx.config.external.ospf_area = area
+                    ctx.dirty = True
+                    log(f"Set external OSPF area to {area}")
+                    return True
+                except ValueError:
+                    error("Invalid area number")
+                    return True
+            if args[1].lower() == "ospf" and len(args) >= 3 and args[2].lower() == "passive":
+                ctx.config.external.ospf_passive = True
+                ctx.dirty = True
+                log(f"Set external as OSPF passive")
+                return True
+            if args[1].lower() == "ospf6" and len(args) >= 4 and args[2].lower() == "area":
+                try:
+                    area = int(args[3])
+                    ctx.config.external.ospf6_area = area
+                    ctx.dirty = True
+                    log(f"Set external OSPFv3 area to {area}")
+                    return True
+                except ValueError:
+                    error("Invalid area number")
+                    return True
+            if args[1].lower() == "ospf6" and len(args) >= 3 and args[2].lower() == "passive":
+                ctx.config.external.ospf6_passive = True
+                ctx.dirty = True
+                log(f"Set external as OSPFv3 passive")
+                return True
+
     # Multi-word commands from any level: "loopbacks add", "nat mappings", etc.
     if command == "loopbacks" and args:
         subcommand = args[0].lower()
@@ -1857,6 +2173,41 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
         if subcommand == "delete":
             cmd_loopback_delete(ctx, args[1:])
             return True
+        # Check for loopback instance with ospf command: "loopbacks 0 ospf area 0"
+        if ctx.config and subcommand.isdigit():
+            instance = int(subcommand)
+            loop = next((l for l in ctx.config.loopbacks if l.instance == instance), None)
+            if loop and len(args) >= 2:
+                if args[1].lower() == "ospf" and len(args) >= 4 and args[2].lower() == "area":
+                    try:
+                        area = int(args[3])
+                        loop.ospf_area = area
+                        ctx.dirty = True
+                        log(f"Set loop{instance} OSPF area to {area}")
+                        return True
+                    except ValueError:
+                        error("Invalid area number")
+                        return True
+                if args[1].lower() == "ospf" and len(args) >= 3 and args[2].lower() == "passive":
+                    loop.ospf_passive = True
+                    ctx.dirty = True
+                    log(f"Set loop{instance} as OSPF passive")
+                    return True
+                if args[1].lower() == "ospf6" and len(args) >= 4 and args[2].lower() == "area":
+                    try:
+                        area = int(args[3])
+                        loop.ospf6_area = area
+                        ctx.dirty = True
+                        log(f"Set loop{instance} OSPFv3 area to {area}")
+                        return True
+                    except ValueError:
+                        error("Invalid area number")
+                        return True
+                if args[1].lower() == "ospf6" and len(args) >= 3 and args[2].lower() == "passive":
+                    loop.ospf6_passive = True
+                    ctx.dirty = True
+                    log(f"Set loop{instance} as OSPFv3 passive")
+                    return True
 
     if command == "bvi" and args:
         subcommand = args[0].lower()
@@ -1869,6 +2220,41 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
         if subcommand == "delete":
             cmd_bvi_delete(ctx, args[1:])
             return True
+        # Check for BVI instance with ospf command: "bvi 1 ospf area 0"
+        if ctx.config and subcommand.isdigit():
+            bridge_id = int(subcommand)
+            bvi = next((b for b in ctx.config.bvi_domains if b.bridge_id == bridge_id), None)
+            if bvi and len(args) >= 2:
+                if args[1].lower() == "ospf" and len(args) >= 4 and args[2].lower() == "area":
+                    try:
+                        area = int(args[3])
+                        bvi.ospf_area = area
+                        ctx.dirty = True
+                        log(f"Set BVI {bridge_id} OSPF area to {area}")
+                        return True
+                    except ValueError:
+                        error("Invalid area number")
+                        return True
+                if args[1].lower() == "ospf" and len(args) >= 3 and args[2].lower() == "passive":
+                    bvi.ospf_passive = True
+                    ctx.dirty = True
+                    log(f"Set BVI {bridge_id} as OSPF passive")
+                    return True
+                if args[1].lower() == "ospf6" and len(args) >= 4 and args[2].lower() == "area":
+                    try:
+                        area = int(args[3])
+                        bvi.ospf6_area = area
+                        ctx.dirty = True
+                        log(f"Set BVI {bridge_id} OSPFv3 area to {area}")
+                        return True
+                    except ValueError:
+                        error("Invalid area number")
+                        return True
+                if args[1].lower() == "ospf6" and len(args) >= 3 and args[2].lower() == "passive":
+                    bvi.ospf6_passive = True
+                    ctx.dirty = True
+                    log(f"Set BVI {bridge_id} as OSPFv3 passive")
+                    return True
 
     if command == "vlan-passthrough" and args:
         subcommand = args[0].lower()
@@ -1936,6 +2322,36 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                     return True
             # Just "routing bgp" - navigate there
             ctx.path = ["routing", "bgp"]
+            return True
+        if subcommand == "ospf":
+            if len(args) > 1:
+                subcmd = args[1].lower()
+                if subcmd == "enable":
+                    cmd_ospf_enable(ctx, args[2:])
+                    return True
+                if subcmd == "disable":
+                    cmd_ospf_disable(ctx, args[2:])
+                    return True
+                if subcmd == "show":
+                    _show_ospf(ctx.config)
+                    return True
+            # Just "routing ospf" - navigate there
+            ctx.path = ["routing", "ospf"]
+            return True
+        if subcommand == "ospf6":
+            if len(args) > 1:
+                subcmd = args[1].lower()
+                if subcmd == "enable":
+                    cmd_ospf6_enable(ctx, args[2:])
+                    return True
+                if subcmd == "disable":
+                    cmd_ospf6_disable(ctx, args[2:])
+                    return True
+                if subcmd == "show":
+                    _show_ospf6(ctx.config)
+                    return True
+            # Just "routing ospf6" - navigate there
+            ctx.path = ["routing", "ospf6"]
             return True
 
     # Snapshot multi-word commands: "snapshot list", "snapshot create", etc.
@@ -2050,6 +2466,24 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             return True
         if command == "disable":
             cmd_bgp_disable(ctx, args)
+            return True
+
+    # OSPF commands
+    if path == ["routing", "ospf"]:
+        if command == "enable":
+            cmd_ospf_enable(ctx, args)
+            return True
+        if command == "disable":
+            cmd_ospf_disable(ctx, args)
+            return True
+
+    # OSPFv3 commands
+    if path == ["routing", "ospf6"]:
+        if command == "enable":
+            cmd_ospf6_enable(ctx, args)
+            return True
+        if command == "disable":
+            cmd_ospf6_disable(ctx, args)
             return True
 
     # Snapshot commands (when in snapshot menu)

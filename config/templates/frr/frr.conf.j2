@@ -51,6 +51,209 @@ router bgp {{ bgp.asn }}
 exit
 {% endif %}
 !
+{% if ospf.enabled %}
+{# OSPF prefix-lists for redistribution #}
+ip prefix-list LOOPBACKS seq 5 permit 0.0.0.0/0 ge 32 le 32
+{% set seq = namespace(num=10) %}
+{% for loop in loopbacks %}
+{% if loop.ipv4 %}
+ip prefix-list LOCAL-ROUTES seq {{ seq.num }} permit {{ loop.ipv4 }}/{{ loop.ipv4_prefix }}
+{% set seq.num = seq.num + 10 %}
+{% endif %}
+{% endfor %}
+{% for iface in internal %}
+ip prefix-list LOCAL-ROUTES seq {{ seq.num }} permit {{ iface.network }}
+{% set seq.num = seq.num + 10 %}
+{% endfor %}
+{% for bvi in bvi_domains %}
+{% if bvi.ipv4 %}
+ip prefix-list LOCAL-ROUTES seq {{ seq.num }} permit {{ bvi.ipv4 }}/{{ bvi.ipv4_prefix }}
+{% set seq.num = seq.num + 10 %}
+{% endif %}
+{% endfor %}
+!
+route-map OSPF-REDISTRIBUTE permit 10
+ match ip address prefix-list LOOPBACKS
+exit
+!
+route-map OSPF-REDISTRIBUTE permit 20
+ match ip address prefix-list LOCAL-ROUTES
+exit
+!
+router ospf
+ ospf router-id {{ ospf.router_id or bgp.router_id }}
+{% if ospf.default_originate %}
+ default-information originate
+{% endif %}
+ redistribute connected route-map OSPF-REDISTRIBUTE
+{# Loopback interfaces #}
+{% for loop in loopbacks %}
+{% if loop.ospf_area is not none and loop.ipv4 %}
+ network {{ loop.ipv4 }}/32 area {{ loop.ospf_area }}
+{% endif %}
+{% endfor %}
+{# Internal interfaces #}
+{% for iface in internal %}
+{% if iface.ospf_area is not none %}
+ network {{ iface.network }} area {{ iface.ospf_area }}
+{% endif %}
+{% for sub in iface.subinterfaces %}
+{% if sub.ospf_area is not none and sub.ipv4 %}
+ network {{ sub.ipv4 }}/{{ sub.ipv4_prefix }} area {{ sub.ospf_area }}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{# External interface #}
+{% if external.ospf_area is not none %}
+ network {{ external.ipv4 }}/{{ external.ipv4_prefix }} area {{ external.ospf_area }}
+{% endif %}
+{% for sub in external.subinterfaces %}
+{% if sub.ospf_area is not none and sub.ipv4 %}
+ network {{ sub.ipv4 }}/{{ sub.ipv4_prefix }} area {{ sub.ospf_area }}
+{% endif %}
+{% endfor %}
+{# BVI interfaces #}
+{% for bvi in bvi_domains %}
+{% if bvi.ospf_area is not none and bvi.ipv4 %}
+ network {{ bvi.ipv4 }}/{{ bvi.ipv4_prefix }} area {{ bvi.ospf_area }}
+{% endif %}
+{% endfor %}
+{# Passive interfaces - loopbacks #}
+{% for loop in loopbacks %}
+{% if loop.ospf_passive and loop.create_lcp %}
+ passive-interface loop{{ loop.instance }}
+{% endif %}
+{% endfor %}
+{# Passive interfaces - internal #}
+{% for iface in internal %}
+{% if iface.ospf_passive %}
+ passive-interface {{ iface.vpp_name }}
+{% endif %}
+{% for sub in iface.subinterfaces %}
+{% if sub.ospf_passive %}
+ passive-interface {{ iface.vpp_name }}.{{ sub.vlan_id }}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{# Passive interfaces - external #}
+{% if external.ospf_passive %}
+ passive-interface external
+{% endif %}
+{% for sub in external.subinterfaces %}
+{% if sub.ospf_passive %}
+ passive-interface external.{{ sub.vlan_id }}
+{% endif %}
+{% endfor %}
+{# Passive interfaces - BVI #}
+{% for bvi in bvi_domains %}
+{% if bvi.ospf_passive and bvi.create_lcp %}
+ passive-interface loop{{ bvi.bridge_id }}
+{% endif %}
+{% endfor %}
+exit
+{% endif %}
+!
+{% if ospf6.enabled %}
+{# OSPFv3 prefix-lists for redistribution #}
+{% set seq6 = namespace(num=10) %}
+{% for loop in loopbacks %}
+{% if loop.ipv6 %}
+ipv6 prefix-list LOCAL-ROUTES6 seq {{ seq6.num }} permit {{ loop.ipv6 }}/{{ loop.ipv6_prefix }}
+{% set seq6.num = seq6.num + 10 %}
+{% endif %}
+{% endfor %}
+{% for iface in internal %}
+{% if iface.ipv6 %}
+ipv6 prefix-list LOCAL-ROUTES6 seq {{ seq6.num }} permit {{ iface.ipv6_network }}
+{% set seq6.num = seq6.num + 10 %}
+{% endif %}
+{% endfor %}
+{% for bvi in bvi_domains %}
+{% if bvi.ipv6 %}
+ipv6 prefix-list LOCAL-ROUTES6 seq {{ seq6.num }} permit {{ bvi.ipv6 }}/{{ bvi.ipv6_prefix }}
+{% set seq6.num = seq6.num + 10 %}
+{% endif %}
+{% endfor %}
+!
+route-map OSPF6-REDISTRIBUTE permit 10
+ match ipv6 address prefix-list LOCAL-ROUTES6
+exit
+!
+router ospf6
+ ospf6 router-id {{ ospf6.router_id or ospf.router_id or bgp.router_id }}
+{% if ospf6.default_originate %}
+ default-information originate
+{% endif %}
+ redistribute connected route-map OSPF6-REDISTRIBUTE
+exit
+!
+{# OSPFv3 interface-level area assignment #}
+{% for loop in loopbacks %}
+{% if loop.ospf6_area is not none and loop.ipv6 and loop.create_lcp %}
+interface loop{{ loop.instance }}
+ ipv6 ospf6 area {{ loop.ospf6_area }}
+{% if loop.ospf6_passive %}
+ ipv6 ospf6 passive
+{% endif %}
+exit
+!
+{% endif %}
+{% endfor %}
+{% for iface in internal %}
+{% if iface.ospf6_area is not none and iface.ipv6 %}
+interface {{ iface.vpp_name }}
+ ipv6 ospf6 area {{ iface.ospf6_area }}
+{% if iface.ospf6_passive %}
+ ipv6 ospf6 passive
+{% endif %}
+exit
+!
+{% endif %}
+{% for sub in iface.subinterfaces %}
+{% if sub.ospf6_area is not none and sub.ipv6 %}
+interface {{ iface.vpp_name }}.{{ sub.vlan_id }}
+ ipv6 ospf6 area {{ sub.ospf6_area }}
+{% if sub.ospf6_passive %}
+ ipv6 ospf6 passive
+{% endif %}
+exit
+!
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% if external.ospf6_area is not none and external.ipv6 %}
+interface external
+ ipv6 ospf6 area {{ external.ospf6_area }}
+{% if external.ospf6_passive %}
+ ipv6 ospf6 passive
+{% endif %}
+exit
+!
+{% endif %}
+{% for sub in external.subinterfaces %}
+{% if sub.ospf6_area is not none and sub.ipv6 %}
+interface external.{{ sub.vlan_id }}
+ ipv6 ospf6 area {{ sub.ospf6_area }}
+{% if sub.ospf6_passive %}
+ ipv6 ospf6 passive
+{% endif %}
+exit
+!
+{% endif %}
+{% endfor %}
+{% for bvi in bvi_domains %}
+{% if bvi.ospf6_area is not none and bvi.ipv6 and bvi.create_lcp %}
+interface loop{{ bvi.bridge_id }}
+ ipv6 ospf6 area {{ bvi.ospf6_area }}
+{% if bvi.ospf6_passive %}
+ ipv6 ospf6 passive
+{% endif %}
+exit
+!
+{% endif %}
+{% endfor %}
+{% endif %}
+!
 route-map ALLOW_IN permit 10
 exit
 !

@@ -379,6 +379,30 @@ def build_tools() -> list[dict]:
                 }
             }
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_ospf_config",
+                "description": "Get OSPF (IPv4) configuration including router ID, default-originate setting, and interface areas",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_ospf6_config",
+                "description": "Get OSPFv3 (IPv6) configuration including router ID, default-originate setting, and interface areas",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
         # Write tools
         {
             "type": "function",
@@ -662,6 +686,156 @@ def build_tools() -> list[dict]:
                     "type": "object",
                     "properties": {},
                     "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "enable_ospf",
+                "description": "Enable and configure OSPF (IPv4 routing protocol)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "router_id": {
+                            "type": "string",
+                            "description": "Router ID (IPv4 address). If not provided, uses BGP router-id if available."
+                        },
+                        "default_originate": {
+                            "type": "boolean",
+                            "description": "Inject default route into OSPF (default: false)"
+                        }
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "disable_ospf",
+                "description": "Disable OSPF",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "enable_ospf6",
+                "description": "Enable and configure OSPFv3 (IPv6 routing protocol)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "router_id": {
+                            "type": "string",
+                            "description": "Router ID (IPv4 address). If not provided, uses OSPF or BGP router-id if available."
+                        },
+                        "default_originate": {
+                            "type": "boolean",
+                            "description": "Inject default route into OSPFv3 (default: false)"
+                        }
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "disable_ospf6",
+                "description": "Disable OSPFv3",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "set_interface_ospf",
+                "description": "Set OSPF area and options for an interface. Use interface names like 'internal0', 'external', 'loop0', 'bvi1'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "interface": {
+                            "type": "string",
+                            "description": "Interface name (e.g., 'internal0', 'external', 'loop0', 'bvi1')"
+                        },
+                        "area": {
+                            "type": "integer",
+                            "description": "OSPF area ID (e.g., 0 for backbone)"
+                        },
+                        "passive": {
+                            "type": "boolean",
+                            "description": "Make interface passive (no OSPF hellos sent)"
+                        }
+                    },
+                    "required": ["interface", "area"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "set_interface_ospf6",
+                "description": "Set OSPFv3 area and options for an interface. Use interface names like 'internal0', 'external', 'loop0', 'bvi1'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "interface": {
+                            "type": "string",
+                            "description": "Interface name (e.g., 'internal0', 'external', 'loop0', 'bvi1')"
+                        },
+                        "area": {
+                            "type": "integer",
+                            "description": "OSPFv3 area ID (e.g., 0 for backbone)"
+                        },
+                        "passive": {
+                            "type": "boolean",
+                            "description": "Make interface passive (no OSPFv3 hellos sent)"
+                        }
+                    },
+                    "required": ["interface", "area"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "clear_interface_ospf",
+                "description": "Remove an interface from OSPF (clear OSPF area)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "interface": {
+                            "type": "string",
+                            "description": "Interface name (e.g., 'internal0', 'external', 'loop0', 'bvi1')"
+                        }
+                    },
+                    "required": ["interface"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "clear_interface_ospf6",
+                "description": "Remove an interface from OSPFv3 (clear OSPFv3 area)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "interface": {
+                            "type": "string",
+                            "description": "Interface name (e.g., 'internal0', 'external', 'loop0', 'bvi1')"
+                        }
+                    },
+                    "required": ["interface"]
                 }
             }
         },
@@ -1297,6 +1471,276 @@ def tool_disable_bgp(config, ctx) -> str:
     return "Disabled BGP"
 
 
+def tool_get_ospf_config(config) -> str:
+    """Get OSPF configuration."""
+    if not config:
+        return "No configuration loaded"
+
+    ospf = config.ospf
+    if not ospf.enabled:
+        return "OSPF is disabled"
+
+    router_id = ospf.router_id or config.bgp.router_id
+    lines = [
+        f"Enabled: {ospf.enabled}",
+        f"Router ID: {router_id}",
+        f"Default Originate: {ospf.default_originate}",
+        "",
+        "Interface Areas:"
+    ]
+
+    has_areas = False
+    # Loopbacks
+    for loop in config.loopbacks:
+        if loop.ospf_area is not None:
+            passive = " (passive)" if loop.ospf_passive else ""
+            lines.append(f"  loop{loop.instance}: area {loop.ospf_area}{passive}")
+            has_areas = True
+    # Internal interfaces
+    for iface in config.internal:
+        if iface.ospf_area is not None:
+            passive = " (passive)" if iface.ospf_passive else ""
+            lines.append(f"  {iface.vpp_name}: area {iface.ospf_area}{passive}")
+            has_areas = True
+    # External interface
+    if config.external and config.external.ospf_area is not None:
+        passive = " (passive)" if config.external.ospf_passive else ""
+        lines.append(f"  external: area {config.external.ospf_area}{passive}")
+        has_areas = True
+    # BVI interfaces
+    for bvi in config.bvi_domains:
+        if bvi.ospf_area is not None:
+            passive = " (passive)" if bvi.ospf_passive else ""
+            lines.append(f"  bvi{bvi.bridge_id}: area {bvi.ospf_area}{passive}")
+            has_areas = True
+
+    if not has_areas:
+        lines.append("  (no interfaces configured)")
+
+    return "\n".join(lines)
+
+
+def tool_get_ospf6_config(config) -> str:
+    """Get OSPFv3 configuration."""
+    if not config:
+        return "No configuration loaded"
+
+    ospf6 = config.ospf6
+    if not ospf6.enabled:
+        return "OSPFv3 is disabled"
+
+    router_id = ospf6.router_id or config.ospf.router_id or config.bgp.router_id
+    lines = [
+        f"Enabled: {ospf6.enabled}",
+        f"Router ID: {router_id}",
+        f"Default Originate: {ospf6.default_originate}",
+        "",
+        "Interface Areas:"
+    ]
+
+    has_areas = False
+    # Loopbacks
+    for loop in config.loopbacks:
+        if loop.ospf6_area is not None:
+            passive = " (passive)" if loop.ospf6_passive else ""
+            lines.append(f"  loop{loop.instance}: area {loop.ospf6_area}{passive}")
+            has_areas = True
+    # Internal interfaces
+    for iface in config.internal:
+        if iface.ospf6_area is not None:
+            passive = " (passive)" if iface.ospf6_passive else ""
+            lines.append(f"  {iface.vpp_name}: area {iface.ospf6_area}{passive}")
+            has_areas = True
+    # External interface
+    if config.external and config.external.ospf6_area is not None:
+        passive = " (passive)" if config.external.ospf6_passive else ""
+        lines.append(f"  external: area {config.external.ospf6_area}{passive}")
+        has_areas = True
+    # BVI interfaces
+    for bvi in config.bvi_domains:
+        if bvi.ospf6_area is not None:
+            passive = " (passive)" if bvi.ospf6_passive else ""
+            lines.append(f"  bvi{bvi.bridge_id}: area {bvi.ospf6_area}{passive}")
+            has_areas = True
+
+    if not has_areas:
+        lines.append("  (no interfaces configured)")
+
+    return "\n".join(lines)
+
+
+def tool_enable_ospf(config, ctx, router_id: str = None, default_originate: bool = False) -> str:
+    """Enable OSPF."""
+    if config.ospf.enabled:
+        return "OSPF is already enabled"
+
+    # Use BGP router-id as fallback if not provided
+    if not router_id:
+        router_id = config.bgp.router_id if config.bgp.enabled else None
+
+    if not router_id:
+        return "Error: router_id is required (no BGP router-id available as fallback)"
+
+    # Validate router_id
+    try:
+        import ipaddress
+        ipaddress.IPv4Address(router_id)
+    except Exception as e:
+        return f"Error: Invalid router ID: {e}"
+
+    config.ospf.enabled = True
+    config.ospf.router_id = router_id
+    config.ospf.default_originate = default_originate
+    ctx.dirty = True
+
+    return f"Enabled OSPF with router-id {router_id}"
+
+
+def tool_disable_ospf(config, ctx) -> str:
+    """Disable OSPF."""
+    if not config.ospf.enabled:
+        return "OSPF is already disabled"
+
+    config.ospf.enabled = False
+    ctx.dirty = True
+    return "Disabled OSPF"
+
+
+def tool_enable_ospf6(config, ctx, router_id: str = None, default_originate: bool = False) -> str:
+    """Enable OSPFv3."""
+    if config.ospf6.enabled:
+        return "OSPFv3 is already enabled"
+
+    # Use OSPF or BGP router-id as fallback if not provided
+    if not router_id:
+        router_id = config.ospf.router_id or (config.bgp.router_id if config.bgp.enabled else None)
+
+    if not router_id:
+        return "Error: router_id is required (no OSPF/BGP router-id available as fallback)"
+
+    # Validate router_id
+    try:
+        import ipaddress
+        ipaddress.IPv4Address(router_id)
+    except Exception as e:
+        return f"Error: Invalid router ID: {e}"
+
+    config.ospf6.enabled = True
+    config.ospf6.router_id = router_id
+    config.ospf6.default_originate = default_originate
+    ctx.dirty = True
+
+    return f"Enabled OSPFv3 with router-id {router_id}"
+
+
+def tool_disable_ospf6(config, ctx) -> str:
+    """Disable OSPFv3."""
+    if not config.ospf6.enabled:
+        return "OSPFv3 is already disabled"
+
+    config.ospf6.enabled = False
+    ctx.dirty = True
+    return "Disabled OSPFv3"
+
+
+def _find_interface_for_ospf(config, interface: str):
+    """Find an interface by name for OSPF configuration.
+
+    Returns (interface_obj, interface_type) where interface_type is one of:
+    'internal', 'external', 'loopback', 'bvi'
+    """
+    # Check loopbacks: loop0, loop1, etc.
+    if interface.startswith("loop"):
+        try:
+            instance = int(interface[4:])
+            for loop in config.loopbacks:
+                if loop.instance == instance:
+                    return loop, "loopback"
+        except ValueError:
+            pass
+
+    # Check BVIs: bvi1, bvi2, etc.
+    if interface.startswith("bvi"):
+        try:
+            bridge_id = int(interface[3:])
+            for bvi in config.bvi_domains:
+                if bvi.bridge_id == bridge_id:
+                    return bvi, "bvi"
+        except ValueError:
+            pass
+
+    # Check internal interfaces: internal0, internal1, etc.
+    for iface in config.internal:
+        if iface.vpp_name == interface:
+            return iface, "internal"
+
+    # Check external interface
+    if interface == "external" and config.external:
+        return config.external, "external"
+
+    return None, None
+
+
+def tool_set_interface_ospf(config, ctx, interface: str, area: int, passive: bool = False) -> str:
+    """Set OSPF area for an interface."""
+    iface, iface_type = _find_interface_for_ospf(config, interface)
+    if iface is None:
+        return f"Error: Interface '{interface}' not found"
+
+    iface.ospf_area = area
+    iface.ospf_passive = passive
+    ctx.dirty = True
+
+    passive_str = " (passive)" if passive else ""
+    return f"Set {interface} OSPF area to {area}{passive_str}"
+
+
+def tool_set_interface_ospf6(config, ctx, interface: str, area: int, passive: bool = False) -> str:
+    """Set OSPFv3 area for an interface."""
+    iface, iface_type = _find_interface_for_ospf(config, interface)
+    if iface is None:
+        return f"Error: Interface '{interface}' not found"
+
+    iface.ospf6_area = area
+    iface.ospf6_passive = passive
+    ctx.dirty = True
+
+    passive_str = " (passive)" if passive else ""
+    return f"Set {interface} OSPFv3 area to {area}{passive_str}"
+
+
+def tool_clear_interface_ospf(config, ctx, interface: str) -> str:
+    """Remove interface from OSPF."""
+    iface, iface_type = _find_interface_for_ospf(config, interface)
+    if iface is None:
+        return f"Error: Interface '{interface}' not found"
+
+    if iface.ospf_area is None:
+        return f"Interface '{interface}' is not in OSPF"
+
+    iface.ospf_area = None
+    iface.ospf_passive = False
+    ctx.dirty = True
+
+    return f"Removed {interface} from OSPF"
+
+
+def tool_clear_interface_ospf6(config, ctx, interface: str) -> str:
+    """Remove interface from OSPFv3."""
+    iface, iface_type = _find_interface_for_ospf(config, interface)
+    if iface is None:
+        return f"Error: Interface '{interface}' not found"
+
+    if iface.ospf6_area is None:
+        return f"Interface '{interface}' is not in OSPFv3"
+
+    iface.ospf6_area = None
+    iface.ospf6_passive = False
+    ctx.dirty = True
+
+    return f"Removed {interface} from OSPFv3"
+
+
 def tool_ask_user(question: str, context: str = None) -> str:
     """Ask the user a clarifying question and return their answer."""
     print()
@@ -1341,6 +1785,10 @@ def execute_tool(name: str, args: dict, config, ctx) -> str:
             return tool_get_nat_config(config)
         if name == "get_bgp_config":
             return tool_get_bgp_config(config)
+        if name == "get_ospf_config":
+            return tool_get_ospf_config(config)
+        if name == "get_ospf6_config":
+            return tool_get_ospf6_config(config)
 
         # Write tools
         if name == "add_subinterface":
@@ -1410,6 +1858,40 @@ def execute_tool(name: str, args: dict, config, ctx) -> str:
             )
         if name == "disable_bgp":
             return tool_disable_bgp(config, ctx)
+        if name == "enable_ospf":
+            return tool_enable_ospf(
+                config, ctx,
+                router_id=args.get("router_id"),
+                default_originate=args.get("default_originate", False)
+            )
+        if name == "disable_ospf":
+            return tool_disable_ospf(config, ctx)
+        if name == "enable_ospf6":
+            return tool_enable_ospf6(
+                config, ctx,
+                router_id=args.get("router_id"),
+                default_originate=args.get("default_originate", False)
+            )
+        if name == "disable_ospf6":
+            return tool_disable_ospf6(config, ctx)
+        if name == "set_interface_ospf":
+            return tool_set_interface_ospf(
+                config, ctx,
+                interface=args.get("interface", ""),
+                area=args.get("area", 0),
+                passive=args.get("passive", False)
+            )
+        if name == "set_interface_ospf6":
+            return tool_set_interface_ospf6(
+                config, ctx,
+                interface=args.get("interface", ""),
+                area=args.get("area", 0),
+                passive=args.get("passive", False)
+            )
+        if name == "clear_interface_ospf":
+            return tool_clear_interface_ospf(config, ctx, interface=args.get("interface", ""))
+        if name == "clear_interface_ospf6":
+            return tool_clear_interface_ospf6(config, ctx, interface=args.get("interface", ""))
 
         # Interactive tool - doesn't need config
         if name == "ask_user":
