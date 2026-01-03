@@ -548,6 +548,28 @@ def build_tools() -> list[dict]:
                 }
             }
         },
+        # Interactive tool
+        {
+            "type": "function",
+            "function": {
+                "name": "ask_user",
+                "description": "Ask the user a clarifying question when their request is ambiguous or missing required information. Use this to gather details needed to complete a task rather than just explaining what's needed.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "A clear, specific question to ask the user"
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Brief context explaining why you need this information (optional)"
+                        }
+                    },
+                    "required": ["question"]
+                }
+            }
+        },
     ]
 
 
@@ -1158,13 +1180,31 @@ def tool_disable_bgp(config, ctx) -> str:
     return "Disabled BGP"
 
 
+def tool_ask_user(question: str, context: str = None) -> str:
+    """Ask the user a clarifying question and return their answer."""
+    print()
+    if context:
+        print(f"{Colors.DIM}{context}{Colors.NC}")
+    print(f"{Colors.CYAN}Question:{Colors.NC} {question}")
+    try:
+        answer = input(f"{Colors.CYAN}Answer:{Colors.NC} ").strip()
+        if not answer:
+            return "(User provided no answer)"
+        return f"User's answer: {answer}"
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return "(User cancelled the question)"
+
+
 # =============================================================================
 # Tool Dispatcher
 # =============================================================================
 
 def execute_tool(name: str, args: dict, config, ctx) -> str:
     """Execute a tool and return result string."""
-    tool_log(name, args)
+    # Don't log ask_user - it has its own display
+    if name != "ask_user":
+        tool_log(name, args)
 
     try:
         # Read tools
@@ -1254,6 +1294,13 @@ def execute_tool(name: str, args: dict, config, ctx) -> str:
         if name == "disable_bgp":
             return tool_disable_bgp(config, ctx)
 
+        # Interactive tool - doesn't need config
+        if name == "ask_user":
+            return tool_ask_user(
+                question=args.get("question", ""),
+                context=args.get("context")
+            )
+
         return f"Unknown tool: {name}"
 
     except Exception as e:
@@ -1273,19 +1320,29 @@ def build_system_prompt(config) -> str:
     return f"""You are an AI assistant for configuring an IMP router. You have access to tools that can read and modify the router configuration.
 
 When the user asks for changes:
-1. Use read tools to understand current state if needed
-2. Use write tools to make the requested changes
-3. Confirm what you did in a concise way
+1. If the request is missing required information, use ask_user to gather it - offer sensible options when appropriate
+2. Use read tools to understand current state if needed
+3. Use write tools to make the requested changes
+4. Confirm what you did concisely
+
+Interface types - choose the right one:
+- **Loopback**: Virtual interface for service IPs, router-id, or any IP that doesn't need L2 connectivity to a physical port. Use add_loopback. Good default if user just wants "an IP address on the router."
+- **Sub-interface**: VLAN on a physical port. Requires parent interface (external/internal0) + VLAN ID. Use add_subinterface. Use when traffic needs to arrive on a specific port with a VLAN tag.
+- **BVI**: IP interface on a bridge domain that bridges multiple L2 members. Use when bridging ports together with a gateway IP.
+
+When the user asks for "a VLAN interface" or "BVI" without specifying details, ask what they need:
+- If they just need an IP address on the router → suggest loopback
+- If they need it connected to a physical port → ask which interface and VLAN ID
+- If they need to bridge multiple ports → that's a BVI with members
 
 Important notes:
-- Changes are staged until the user runs 'apply' in the main REPL. You cannot apply changes directly.
-- At least one IP address (IPv4 or IPv6) is required when adding sub-interfaces or loopbacks.
-- VLAN IDs must be between 1 and 4094.
-- When adding sub-interfaces, specify the parent interface name.
+- Changes are staged until 'apply'. You cannot apply changes directly.
+- At least one IP address (IPv4 or IPv6) is required for interfaces.
+- VLAN IDs must be 1-4094.
 
-Available interfaces: {', '.join(interfaces)}
+Available physical interfaces: {', '.join(interfaces)}
 
-Be helpful and concise. If something fails, explain why and suggest alternatives."""
+Be helpful and concise. Use ask_user with clear options when gathering information."""
 
 
 # =============================================================================
