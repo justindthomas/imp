@@ -119,6 +119,13 @@ live-boot
 live-config
 live-config-systemd
 sudo
+
+# Python (for IMP tools and agent)
+python3
+python3-jinja2
+python3-prompt-toolkit
+python3-requests
+python3-rich
 EOF
 
 # =============================================================================

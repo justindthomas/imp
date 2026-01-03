@@ -30,7 +30,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="${SCRIPT_DIR}/../config"
 IMAGE_FILE=""
 PERSISTENT_FILE=""
-INSTALL_MODE="bootstrap"  # "bootstrap" or "image"
+OUTPUT_FILE=""
+INSTALL_MODE="bootstrap"  # "bootstrap", "image", or "build"
+BUILD_POOL_FILE=""  # Temporary file for build mode pool
 
 # Colors for output
 RED='\033[0;31m'
@@ -43,28 +45,34 @@ warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 usage() {
-    echo "Usage: $0 [--image <file.zfs.zst>] [--persistent <file.zfs.zst>] <disk>"
+    echo "Usage: $0 [options] <disk>"
+    echo "       $0 --output <file.zfs.zst>  (build mode)"
     echo ""
     echo "Arguments:"
     echo "  disk              Target disk (e.g., /dev/sda, /dev/nvme0n1)"
     echo ""
     echo "Options:"
     echo "  --image <file>      Install from pre-built ZFS snapshot (faster, offline)"
-    echo "                      Created by: imp snapshot export <name>"
+    echo "                      Created by: $0 --output or imp snapshot export"
     echo "  --persistent <file> Also restore persistent data (config + data)"
     echo "                      Created by: imp snapshot export --full <name>"
+    echo "  --output <file>     Build mode: create image file instead of installing"
+    echo "  --hostname <name>   Set hostname (default: router)"
     echo ""
-    echo "Installation modes:"
+    echo "Modes:"
     echo "  Bootstrap (default):  Downloads packages from internet (~15-30 min)"
     echo "  Image (--image):      Receives pre-built snapshot (~2-5 min)"
+    echo "  Build (--output):     Creates deployable image file (~15-30 min)"
     echo ""
     echo "Examples:"
     echo "  $0 /dev/sda                                      # Bootstrap install"
     echo "  $0 --image system.zfs.zst /dev/sda               # Image install"
     echo "  $0 --image system.zfs.zst --persistent persistent.zfs.zst /dev/sda"
     echo "                                                   # Full restore"
+    echo "  $0 --output imp-v1.0.0.zfs.zst                   # Build image"
     echo ""
-    echo "This script will DESTROY all data on the target disk."
+    echo "Note: Bootstrap and build modes require internet access."
+    echo "      Install to disk will DESTROY all data on the target disk."
     exit 1
 }
 
@@ -83,6 +91,17 @@ while [[ $# -gt 0 ]]; do
             PERSISTENT_FILE="$2"
             shift 2
             ;;
+        --output|-o)
+            [[ -z "${2:-}" ]] && error "--output requires a file path"
+            OUTPUT_FILE="$2"
+            INSTALL_MODE="build"
+            shift 2
+            ;;
+        --hostname)
+            [[ -z "${2:-}" ]] && error "--hostname requires a name"
+            HOSTNAME="$2"
+            shift 2
+            ;;
         --help|-h)
             usage
             ;;
@@ -97,8 +116,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate arguments
-[[ -z "$DISK" ]] && usage
-[[ ! -b "$DISK" ]] && error "Disk $DISK does not exist or is not a block device"
+if [[ "$INSTALL_MODE" == "build" ]]; then
+    # Build mode: output file required, no disk
+    [[ -z "$OUTPUT_FILE" ]] && error "Build mode requires --output <file>"
+    [[ -n "$DISK" ]] && error "Build mode doesn't use a disk target"
+    [[ -n "$PERSISTENT_FILE" ]] && error "Build mode doesn't support --persistent"
+
+    # Use a temporary pool name to avoid conflicts
+    POOL_NAME="imp-build-$$"
+else
+    # Install modes: disk required
+    [[ -z "$DISK" ]] && usage
+    [[ ! -b "$DISK" ]] && error "Disk $DISK does not exist or is not a block device"
+fi
 
 # Validate image file if specified
 if [[ "$INSTALL_MODE" == "image" ]]; then
@@ -131,8 +161,8 @@ if ! command -v zpool &>/dev/null; then
     error "ZFS not available. Install with: apt install -y zfsutils-linux zfs-dkms && modprobe zfs"
 fi
 
-# Check if config directory exists (only needed for bootstrap mode)
-if [[ "$INSTALL_MODE" == "bootstrap" ]]; then
+# Check if config directory exists (needed for bootstrap and build modes)
+if [[ "$INSTALL_MODE" == "bootstrap" || "$INSTALL_MODE" == "build" ]]; then
     if [[ ! -d "$CONFIG_DIR" ]]; then
         # Try alternate location (installed on ISO)
         if [[ -d "/root/imp-build/config" ]]; then
@@ -144,26 +174,46 @@ if [[ "$INSTALL_MODE" == "bootstrap" ]]; then
     fi
 fi
 
-# Check for existing pool
+# Check for existing pool (not needed for build mode - uses unique temp name)
 EXISTING_POOL=""
-if zpool list "$POOL_NAME" &>/dev/null; then
-    EXISTING_POOL="imported"
-    warn "Pool '$POOL_NAME' is currently imported!"
-elif zpool import 2>/dev/null | grep -q "pool: $POOL_NAME"; then
-    EXISTING_POOL="available"
-    warn "Pool '$POOL_NAME' exists and can be imported!"
+if [[ "$INSTALL_MODE" != "build" ]]; then
+    if zpool list "$POOL_NAME" &>/dev/null; then
+        EXISTING_POOL="imported"
+        warn "Pool '$POOL_NAME' is currently imported!"
+    elif zpool import 2>/dev/null | grep -q "pool: $POOL_NAME"; then
+        EXISTING_POOL="available"
+        warn "Pool '$POOL_NAME' exists and can be imported!"
+    fi
 fi
 
-# Confirm destruction
+# Confirm operation
 echo ""
 echo "=========================================="
-echo "  IMP Router Setup"
+if [[ "$INSTALL_MODE" == "build" ]]; then
+    echo "  IMP Image Builder"
+else
+    echo "  IMP Router Setup"
+fi
 echo "=========================================="
 echo ""
-echo "Target disk: $DISK"
-echo "Pool name:   $POOL_NAME"
-echo ""
-if [[ "$INSTALL_MODE" == "image" ]]; then
+if [[ "$INSTALL_MODE" == "build" ]]; then
+    echo "Build mode:   CREATE IMAGE"
+    echo "Output file:  $OUTPUT_FILE"
+    echo "Hostname:     $HOSTNAME"
+    echo ""
+    echo "This will create a deployable image containing:"
+    echo "  - Debian Bookworm with ZFS root"
+    echo "  - VPP (Vector Packet Processing)"
+    echo "  - FRR (Free Range Routing)"
+    echo "  - Incus (container runtime)"
+    echo "  - IMP configuration tools"
+    echo ""
+    echo "The image can be installed with:"
+    echo "  install-imp --image $OUTPUT_FILE /dev/sdX"
+elif [[ "$INSTALL_MODE" == "image" ]]; then
+    echo "Target disk:  $DISK"
+    echo "Pool name:    $POOL_NAME"
+    echo ""
     echo "Install mode: IMAGE (from exported snapshot)"
     echo "Image file:   $IMAGE_FILE"
     if [[ -n "$PERSISTENT_FILE" ]]; then
@@ -181,6 +231,9 @@ if [[ "$INSTALL_MODE" == "image" ]]; then
     fi
     echo "  - Set up ZFSBootMenu"
 else
+    echo "Target disk:  $DISK"
+    echo "Pool name:    $POOL_NAME"
+    echo ""
     echo "Install mode: BOOTSTRAP (from internet)"
     echo "Hostname:     $HOSTNAME"
     echo ""
@@ -197,27 +250,66 @@ if [[ -n "$EXISTING_POOL" ]]; then
     echo "This pool will be DESTROYED and recreated."
     echo ""
 fi
-warn "This will DESTROY ALL DATA on $DISK"
+if [[ "$INSTALL_MODE" != "build" ]]; then
+    warn "This will DESTROY ALL DATA on $DISK"
+fi
 echo ""
 read -p "Type 'yes' to continue: " CONFIRM
 [[ "$CONFIRM" != "yes" ]] && error "Aborted"
 
-# Handle existing pool
-if [[ "$EXISTING_POOL" == "imported" ]]; then
-    log "Exporting existing pool '$POOL_NAME'..."
-    zpool export "$POOL_NAME" || zpool export -f "$POOL_NAME" || error "Cannot export existing pool"
-fi
+# Handle existing pool (not for build mode)
+if [[ "$INSTALL_MODE" != "build" ]]; then
+    if [[ "$EXISTING_POOL" == "imported" ]]; then
+        log "Exporting existing pool '$POOL_NAME'..."
+        zpool export "$POOL_NAME" || zpool export -f "$POOL_NAME" || error "Cannot export existing pool"
+    fi
 
-if zpool import 2>/dev/null | grep -q "pool: $POOL_NAME"; then
-    log "Destroying existing pool '$POOL_NAME'..."
-    # Import and destroy
-    zpool import -f "$POOL_NAME" 2>/dev/null || true
-    zpool destroy -f "$POOL_NAME" 2>/dev/null || true
+    if zpool import 2>/dev/null | grep -q "pool: $POOL_NAME"; then
+        log "Destroying existing pool '$POOL_NAME'..."
+        # Import and destroy
+        zpool import -f "$POOL_NAME" 2>/dev/null || true
+        zpool destroy -f "$POOL_NAME" 2>/dev/null || true
+    fi
 fi
 
 # =============================================================================
-# Partition the disk
+# Build mode: Create temporary file-backed pool
 # =============================================================================
+if [[ "$INSTALL_MODE" == "build" ]]; then
+    log "Creating temporary build environment..."
+
+    # Create a 20GB sparse file for the build pool
+    BUILD_POOL_FILE="/tmp/imp-build-$$.img"
+    truncate -s 20G "$BUILD_POOL_FILE"
+
+    # Create the temporary pool
+    zpool create -f \
+        -o ashift=12 \
+        -O acltype=posixacl \
+        -O canmount=off \
+        -O compression=zstd \
+        -O dnodesize=auto \
+        -O normalization=formD \
+        -O relatime=on \
+        -O xattr=sa \
+        -O mountpoint=none \
+        "$POOL_NAME" "$BUILD_POOL_FILE"
+
+    # Create the root dataset structure
+    zfs create -o canmount=off -o mountpoint=none "${POOL_NAME}/ROOT"
+    zfs create -o canmount=noauto -o mountpoint=/ "${POOL_NAME}/ROOT/default"
+
+    # Mount for installation
+    zfs set mountpoint="$ROOTFS" "${POOL_NAME}/ROOT/default"
+    zfs mount "${POOL_NAME}/ROOT/default"
+
+    BOOT_ENV="default"
+fi
+
+# =============================================================================
+# Partition the disk (skip for build mode)
+# =============================================================================
+if [[ "$INSTALL_MODE" != "build" ]]; then
 log "Partitioning $DISK..."
 
 # Determine partition suffix (nvme uses 'p', sata/virtio don't)
@@ -281,6 +373,8 @@ else
     zfs create "${POOL_NAME}/persistent/data"
 fi
 
+fi  # End of disk partitioning section (not for build mode)
+
 if [[ "$INSTALL_MODE" == "image" ]]; then
     # ==========================================================================
     # IMAGE MODE: Receive snapshot from exported file
@@ -311,7 +405,7 @@ if [[ "$INSTALL_MODE" == "image" ]]; then
     mkdir -p "$ROOTFS/boot/efi"
     mount "${PART_PREFIX}2" "$ROOTFS/boot/efi"
 
-else
+elif [[ "$INSTALL_MODE" == "bootstrap" ]]; then
     # ==========================================================================
     # BOOTSTRAP MODE: Create empty BE and install from internet
     # ==========================================================================
@@ -323,8 +417,9 @@ else
 
     BOOT_ENV="debian-initial"
 fi
+# Note: BUILD mode pool and mount already set up earlier
 
-if [[ "$INSTALL_MODE" == "bootstrap" ]]; then
+if [[ "$INSTALL_MODE" == "bootstrap" || "$INSTALL_MODE" == "build" ]]; then
     # =========================================================================
     # BOOTSTRAP MODE: Build system from internet
     # =========================================================================
@@ -351,9 +446,11 @@ if [[ "$INSTALL_MODE" == "bootstrap" ]]; then
     mount --rbind /proc "$ROOTFS/proc"
     mount --rbind /sys  "$ROOTFS/sys"
 
-    # Mount ESP
-    mkdir -p "$ROOTFS/boot/efi"
-    mount "${PART_PREFIX}2" "$ROOTFS/boot/efi"
+    # Mount ESP (not for build mode - no disk)
+    if [[ "$INSTALL_MODE" != "build" ]]; then
+        mkdir -p "$ROOTFS/boot/efi"
+        mount "${PART_PREFIX}2" "$ROOTFS/boot/efi"
+    fi
 
     # Temporary DNS for chroot (systemd-resolved will take over after boot)
     rm -f "$ROOTFS/etc/resolv.conf"
@@ -429,7 +526,9 @@ EOF
         console-setup \
         python3 \
         python3-jinja2 \
-        python3-prompt-toolkit
+        python3-prompt-toolkit \
+        python3-requests \
+        python3-rich
 
     # -------------------------------------------------------------------------
     # Setup fd.io repository and install VPP
@@ -526,11 +625,13 @@ EOF
     ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure-router"
     ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure_router.py"
 
-    # Install imp CLI and REPL
+    # Install imp CLI, REPL, and Agent
     cp "$SCRIPT_DIR/imp" "$ROOTFS/usr/local/bin/"
     cp "$SCRIPT_DIR/imp_repl.py" "$ROOTFS/usr/local/bin/"
+    cp "$SCRIPT_DIR/imp_agent.py" "$ROOTFS/usr/local/bin/"
     chmod +x "$ROOTFS/usr/local/bin/imp"
     chmod +x "$ROOTFS/usr/local/bin/imp_repl.py"
+    chmod +x "$ROOTFS/usr/local/bin/imp_agent.py"
 
     # -------------------------------------------------------------------------
     # Enable services
@@ -560,7 +661,67 @@ else
 fi
 
 # =============================================================================
-# Common steps for both modes
+# Build mode: Export image and clean up
+# =============================================================================
+if [[ "$INSTALL_MODE" == "build" ]]; then
+    log "Preparing image for export..."
+
+    # Set ZFS properties for bootability
+    zfs set canmount=noauto "${POOL_NAME}/ROOT/${BOOT_ENV}"
+    zfs set org.zfsbootmenu:commandline="quiet" "${POOL_NAME}/ROOT/${BOOT_ENV}"
+
+    # Clean up apt cache to reduce image size
+    rm -rf "${ROOTFS}/var/cache/apt/archives"/*.deb
+    rm -rf "${ROOTFS}/var/lib/apt/lists"/*
+
+    # Unmount bind mounts
+    log "Unmounting filesystems..."
+    umount -l "$ROOTFS/dev" 2>/dev/null || true
+    umount -l "$ROOTFS/proc" 2>/dev/null || true
+    umount -l "$ROOTFS/sys" 2>/dev/null || true
+
+    sync
+    sleep 1
+
+    # Unmount ZFS filesystem before snapshot
+    zfs unmount "${POOL_NAME}/ROOT/${BOOT_ENV}" 2>/dev/null || true
+
+    # Set correct mountpoint for the image
+    zfs set mountpoint=/ "${POOL_NAME}/ROOT/${BOOT_ENV}"
+
+    # Create snapshot and export
+    log "Creating snapshot and exporting image..."
+    SNAPSHOT="${POOL_NAME}/ROOT/${BOOT_ENV}@release"
+    zfs snapshot "$SNAPSHOT"
+    zfs send "$SNAPSHOT" | zstd -T0 -10 > "$OUTPUT_FILE"
+
+    # Get output file size
+    OUTPUT_SIZE=$(ls -lh "$OUTPUT_FILE" | awk '{print $5}')
+
+    # Clean up temporary pool
+    log "Cleaning up build environment..."
+    zpool destroy -f "$POOL_NAME"
+    rm -f "$BUILD_POOL_FILE"
+
+    echo ""
+    echo "=========================================="
+    log "Image build complete!"
+    echo "=========================================="
+    echo ""
+    echo "Output: $OUTPUT_FILE ($OUTPUT_SIZE)"
+    echo ""
+    echo "To install this image on a router:"
+    echo "  install-imp --image $OUTPUT_FILE /dev/sdX"
+    echo ""
+    echo "Or from the IMP Installer ISO:"
+    echo "  install-imp --image $OUTPUT_FILE /dev/sda"
+    echo ""
+
+    exit 0
+fi
+
+# =============================================================================
+# Common steps for disk install modes (bootstrap and image)
 # =============================================================================
 
 # Generate hostid (required for ZFS pool import on new hardware)

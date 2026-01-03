@@ -67,7 +67,6 @@ imp-build/
     ├── bootstrap-livecd.sh     # Add ZFS support to stock Debian Live CD
     ├── install-imp             # Complete router install from Live CD
     ├── setup-build-vm.sh       # Build VM initialization
-    ├── build-image.sh          # Builds a deployable ZFS image
     ├── configure-router.py     # Interactive router configuration (Python/Jinja2)
     └── imp                     # CLI management utility
 ```
@@ -292,7 +291,19 @@ install-imp --image router-20240101-system.zfs.zst \
             --persistent router-20240101-persistent.zfs.zst /dev/sda
 ```
 
-Image files are created on a running system with:
+### Building Images
+
+Images can be built on the ISO or any system with ZFS:
+
+```bash
+# Build a deployable image (same as bootstrap, but outputs a file)
+install-imp --output imp-v1.0.0.zfs.zst
+
+# With custom hostname
+install-imp --output imp-v1.0.0.zfs.zst --hostname myrouter
+```
+
+On a running router, export the current system:
 ```bash
 imp snapshot create mybackup
 imp snapshot export mybackup           # System only
@@ -301,19 +312,6 @@ imp snapshot export --full mybackup    # System + persistent data
 # Creates:
 #   <hostname>-mybackup-system.zfs.zst
 #   <hostname>-mybackup-persistent.zfs.zst  (with --full)
-```
-
-### On the Build VM
-
-```bash
-# Import build pool (required after reboot)
-zpool import -d /var/lib buildpool
-
-# Build an image
-./scripts/build-image.sh imp-v1.0.0
-
-# Output location
-ls -lh /var/lib/images/
 ```
 
 ### On the Appliance
@@ -416,36 +414,45 @@ imp agent --model devstral-2:123b      # Use specific model
 3. Config file (`/persistent/config/imp.json`)
 4. Defaults (`localhost:11434`, `gpt-oss:120b`)
 
-**Example session:**
+**Example session with interactive clarification:**
 ```
 imp> agent
 [+] Connected to Ollama (gpt-oss:120b)
 Type your request, or 'exit' to return
 
-agent> Add a VLAN 3045 on external with IP 10.45.0.1/24
+agent> Add an interface with IP 2.2.2.2/24
 
-[Tool: add_subinterface]
-  interface: external
-  vlan_id: 3045
-  ipv4_cidr: 10.45.0.1/24
-  create_lcp: true
-  → Added external.3045 with 10.45.0.1/24
+Question: What type of interface do you need?
+- Loopback (just an IP on the router, no L2 connectivity)
+- Sub-interface (VLAN on a physical port)
+- BVI (bridge multiple ports with a gateway IP)
+Answer: loopback
 
-Done! I've added sub-interface external.3045 with IP 10.45.0.1/24.
-The change is staged - use 'apply' to save and regenerate configs.
+[Tool: add_loopback]
+  name: user-requested
+  ipv4_cidr: 2.2.2.2/24
+  → Added loop0 (user-requested) with 2.2.2.2/24
+
+Done! Created loopback interface with 2.2.2.2/24.
 
 agent> exit
 imp> apply
 ```
 
+**Interface types** (the agent understands these distinctions):
+- **Loopback**: Virtual interface for service IPs, router-id. No physical port needed.
+- **Sub-interface**: VLAN on a physical port. Requires parent interface + VLAN ID.
+- **BVI**: IP on a bridge domain that bridges multiple L2 members together.
+
 **Available tools:**
-- **Read**: `get_config_summary`, `get_interfaces`, `get_loopbacks`, `get_nat_config`, `get_bgp_config`, etc.
-- **Write**: `add_subinterface`, `delete_subinterface`, `add_loopback`, `add_nat_mapping`, `enable_bgp`, etc.
+- **Read**: `get_config_summary`, `get_interfaces`, `get_interface_detail`, `get_loopbacks`, `get_bvi_domains`, `get_vlan_passthrough`, `get_nat_config`, `get_bgp_config`
+- **Write**: `add_subinterface`, `delete_subinterface`, `add_loopback`, `delete_loopback`, `add_nat_mapping`, `delete_nat_mapping`, `add_nat_bypass`, `delete_nat_bypass`, `set_nat_prefix`, `add_vlan_passthrough`, `delete_vlan_passthrough`, `enable_bgp`, `disable_bgp`
+- **Interactive**: `ask_user` — prompts user for clarification when request is ambiguous
 
 Changes made by the agent are staged (same as manual REPL changes). Use `show` to review and `apply` to persist.
 
 **Key files:**
-- `scripts/imp_agent.py` — Agent implementation with Ollama client
+- `scripts/imp_agent.py` — Agent implementation with Ollama client and tool definitions
 
 ### VPP Commands
 
@@ -493,7 +500,7 @@ tank/
 
 ## Build Script Details
 
-`scripts/build-image.sh` uses mmdebstrap to create a Debian Bookworm system with:
+`install-imp --output` creates a Debian Bookworm system image with:
 
 - systemd, dbus
 - Linux kernel and headers
@@ -502,26 +509,19 @@ tank/
 - VPP and plugins (from fd.io repository)
 - FRR (Free Range Routing)
 - Incus (from bookworm-backports)
-- Jinja2 templates and configure-router.py
+- IMP CLI, REPL, and Agent
 
 The script:
-1. Creates a fresh dataset in the build pool
-2. Bootstraps Debian Bookworm into it
+1. Creates a temporary file-backed ZFS pool
+2. Bootstraps Debian Bookworm using debootstrap
 3. Adds fd.io repository and installs VPP
 4. Installs FRR and Incus
 5. Copies static configs and Jinja2 templates from `config/` directory
-6. Enables only basic services (ssh, networkd, resolved)
-7. Sets ZFS properties for bootability
-8. Snapshots and sends to a compressed file
-
-## Environment Details
-
-### Build VM
-
-- Debian Bookworm
-- File-backed ZFS pool at `/var/lib/build-pool.img`
-- Build output in `/var/lib/images/`
-- Pool must be manually imported after reboot: `zpool import -d /var/lib buildpool`
+6. Installs IMP management tools
+7. Enables only basic services (ssh, networkd, resolved)
+8. Sets ZFS properties for bootability
+9. Snapshots and sends to a compressed file
+10. Cleans up temporary pool
 
 ### Appliance
 
