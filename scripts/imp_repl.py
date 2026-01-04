@@ -25,6 +25,8 @@ except ImportError:
     sys.exit(1)
 
 # Import configuration classes from configure-router
+# Also add script directory for live_config import
+sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, '/usr/local/bin')
 try:
     from configure_router import (
@@ -931,7 +933,7 @@ def cmd_save(ctx: MenuContext, args: list[str]) -> None:
 
 
 def cmd_apply(ctx: MenuContext, args: list[str]) -> None:
-    """Save configuration and regenerate config files."""
+    """Save configuration and apply changes (live if possible)."""
     if not ctx.config:
         error("No configuration to apply")
         return
@@ -941,35 +943,121 @@ def cmd_apply(ctx: MenuContext, args: list[str]) -> None:
         return
 
     try:
-        # Save first
+        # Load previous config for diffing
+        old_config = None
+        if CONFIG_FILE.exists():
+            try:
+                old_config = load_config(CONFIG_FILE)
+            except Exception:
+                pass
+
+        # Save new config
         log("Saving configuration...")
         save_config(ctx.config, CONFIG_FILE)
         ctx.dirty = False
         ctx.original_json = json.dumps(asdict(ctx.config), sort_keys=True)
 
-        # Render templates
+        # Render templates (ensures config files are consistent for restarts)
         log("Regenerating configuration files...")
         render_templates(ctx.config, TEMPLATE_DIR, GENERATED_DIR)
         apply_configs(GENERATED_DIR)
 
-        log("Configuration applied")
-        print()
+        # Try live apply if we have a previous config to diff against
+        if old_config:
+            try:
+                from live_config import LiveConfigApplier, requires_restart, get_change_summary
 
-        # Ask about restart
-        response = input("Restart services now? [y/N]: ").strip().lower()
-        if response == 'y':
-            log("Restarting services...")
-            # Order matters: vpp-core must be up before vpp-core-config, vpp-nat, and frr
-            subprocess.run(["systemctl", "restart", "vpp-core"], check=False)
-            subprocess.run(["systemctl", "restart", "vpp-core-config"], check=False)
-            subprocess.run(["systemctl", "restart", "vpp-nat"], check=False)
-            subprocess.run(["systemctl", "restart", "frr"], check=False)
-            log("Services restarted")
+                # Check for changes that require restart
+                restart_reasons = requires_restart(old_config, ctx.config)
+
+                # Create applier and show dry run
+                applier = LiveConfigApplier(old_config, ctx.config)
+                success, messages = applier.apply(dry_run=True)
+
+                print()
+                print(f"{Colors.BOLD}Changes detected:{Colors.NC}")
+                for msg in messages:
+                    print(f"  {msg}")
+                print()
+
+                if restart_reasons:
+                    warn("Some changes require service restart:")
+                    for reason in restart_reasons:
+                        print(f"    - {reason}")
+                    print()
+
+                # Check if there are any live-applicable changes
+                has_live_changes = any("DRY-RUN" in msg for msg in messages)
+
+                if has_live_changes:
+                    response = input("Apply changes live? [Y/n]: ").strip().lower()
+                    if response != 'n':
+                        log("Applying changes live...")
+                        success, messages = applier.apply(dry_run=False)
+                        for msg in messages:
+                            if "ERROR" in msg:
+                                error(msg)
+                            elif msg.startswith("  OK"):
+                                log(msg.strip())
+                            else:
+                                print(f"  {msg}")
+
+                        if not success:
+                            error("Some changes failed to apply. Manual intervention may be required.")
+                            print("You can restart services to apply all changes from config files:")
+                            print("  systemctl restart vpp-core vpp-core-config vpp-nat frr")
+                            return
+                        else:
+                            log("Live changes applied successfully")
+                    else:
+                        print("Changes saved to config files. Restart services to apply:")
+                        print("  systemctl restart vpp-core vpp-core-config vpp-nat frr")
+                        return
+
+                # Handle restart-required changes
+                if restart_reasons:
+                    response = input("Restart services for remaining changes? [y/N]: ").strip().lower()
+                    if response == 'y':
+                        _restart_services()
+                    else:
+                        print("Run 'systemctl restart vpp-core vpp-core-config vpp-nat frr' to apply remaining changes")
+                else:
+                    log("Configuration applied")
+
+            except ImportError:
+                # live_config not available, fall back to restart
+                warn("Live config module not available, falling back to service restart")
+                response = input("Restart services now? [y/N]: ").strip().lower()
+                if response == 'y':
+                    _restart_services()
+                else:
+                    print("Run 'systemctl restart vpp-core vpp-core-config vpp-nat frr' to apply changes")
+
         else:
-            print("Run 'systemctl restart vpp-core vpp-core-config vpp-nat frr' to apply changes")
+            # No previous config - this is first-time setup, must restart
+            log("Configuration applied (first-time setup)")
+            print()
+            response = input("Start services now? [y/N]: ").strip().lower()
+            if response == 'y':
+                _restart_services()
+            else:
+                print("Run 'systemctl restart vpp-core vpp-core-config vpp-nat frr' to start services")
 
     except Exception as e:
         error(f"Failed to apply: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def _restart_services() -> None:
+    """Restart all dataplane services in correct order."""
+    log("Restarting services...")
+    # Order matters: vpp-core must be up before vpp-core-config, vpp-nat, and frr
+    subprocess.run(["systemctl", "restart", "vpp-core"], check=False)
+    subprocess.run(["systemctl", "restart", "vpp-core-config"], check=False)
+    subprocess.run(["systemctl", "restart", "vpp-nat"], check=False)
+    subprocess.run(["systemctl", "restart", "frr"], check=False)
+    log("Services restarted")
 
 
 def cmd_reload(ctx: MenuContext, args: list[str]) -> None:
