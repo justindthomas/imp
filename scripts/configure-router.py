@@ -1393,6 +1393,9 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path)
     # Add enumerate to Jinja2 environment
     env.globals['enumerate'] = enumerate
 
+    # Add custom test for substring matching (used in templates for IPv6 detection)
+    env.tests['contains'] = lambda value, substring: substring in str(value)
+
     # Prepare template context
     context = {
         'hostname': config.hostname,

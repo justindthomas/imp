@@ -31,6 +31,8 @@ try:
 
     def render_cell(cell: str) -> Text:
         """Render markdown formatting in a table cell."""
+        # Pre-process: convert <br>, <br/>, <br /> to newlines
+        cell = re.sub(r'<br\s*/?>', '\n', cell, flags=re.IGNORECASE)
         text = Text()
         i = 0
         while i < len(cell):
@@ -135,6 +137,49 @@ except ImportError:
     console = None
     fix_markdown_tables = None
     render_content_with_tables = None
+
+
+# =============================================================================
+# VPP Command Execution
+# =============================================================================
+
+VPP_CORE_SOCKET = "/run/vpp/core-cli.sock"
+VPP_NAT_SOCKET = "/run/vpp/nat-cli.sock"
+
+
+def vpp_exec(command: str, instance: str = "core") -> tuple[bool, str]:
+    """
+    Execute a VPP command and capture output.
+
+    Args:
+        command: VPP CLI command to execute
+        instance: "core" or "nat"
+
+    Returns:
+        (success: bool, output: str)
+    """
+    import subprocess
+
+    socket = VPP_CORE_SOCKET if instance == "core" else VPP_NAT_SOCKET
+
+    if not Path(socket).exists():
+        return False, f"VPP {instance} socket not found: {socket}"
+
+    try:
+        result = subprocess.run(
+            ["vppctl", "-s", socket, command],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = result.stdout.strip()
+        if result.returncode != 0 and result.stderr.strip():
+            return False, result.stderr.strip()
+        return True, output
+    except subprocess.TimeoutExpired:
+        return False, "Command timed out"
+    except Exception as e:
+        return False, str(e)
 
 
 # =============================================================================
@@ -870,6 +915,225 @@ def build_tools() -> list[dict]:
                         }
                     },
                     "required": ["interface"]
+                }
+            }
+        },
+        # Packet capture tools
+        {
+            "type": "function",
+            "function": {
+                "name": "start_capture",
+                "description": "Start a packet capture on a VPP instance. Captures are written to /tmp as .pcap files.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "instance": {
+                            "type": "string",
+                            "description": "VPP instance: 'core' (main routing) or 'nat' (NAT translation)",
+                            "enum": ["core", "nat"]
+                        },
+                        "interface": {
+                            "type": "string",
+                            "description": "Interface name to capture on, or 'any' for all interfaces (default: 'any')"
+                        },
+                        "direction": {
+                            "type": "string",
+                            "description": "Capture direction: 'rx', 'tx', 'drop', 'rx tx', or 'rx tx drop' (default: 'rx tx')"
+                        },
+                        "max_packets": {
+                            "type": "integer",
+                            "description": "Maximum packets to capture. 0 for unlimited (default: 10000)"
+                        },
+                        "filename": {
+                            "type": "string",
+                            "description": "Output filename (without .pcap extension). Auto-generated if not specified."
+                        }
+                    },
+                    "required": ["instance"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "stop_capture",
+                "description": "Stop an active packet capture and write the pcap file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "instance": {
+                            "type": "string",
+                            "description": "VPP instance to stop capture on: 'core' or 'nat'",
+                            "enum": ["core", "nat"]
+                        }
+                    },
+                    "required": ["instance"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_capture_status",
+                "description": "Show active captures on both VPP instances (core and NAT)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_capture_files",
+                "description": "List all pcap capture files in /tmp with size and modification time",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "analyze_capture",
+                "description": "Analyze a pcap file using tshark. Returns file info, protocol hierarchy, and top conversations.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "Pcap filename (in /tmp) or full path. .pcap extension is optional."
+                        }
+                    },
+                    "required": ["filename"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_capture",
+                "description": "Delete a pcap capture file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "Pcap filename to delete (in /tmp) or full path"
+                        }
+                    },
+                    "required": ["filename"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "tshark_query",
+                "description": "Run a tshark query on a pcap file for detailed packet analysis. Use this to inspect specific protocols, filter packets, or extract field values.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "Pcap filename (in /tmp) or full path"
+                        },
+                        "display_filter": {
+                            "type": "string",
+                            "description": "Wireshark display filter (e.g., 'dns', 'tcp.port==80', 'ip.addr==10.0.0.1')"
+                        },
+                        "fields": {
+                            "type": "string",
+                            "description": "Comma-separated fields to extract (e.g., 'dns.qry.name,dns.a'). If omitted, shows packet summary."
+                        },
+                        "max_packets": {
+                            "type": "integer",
+                            "description": "Maximum packets to return (default: 50)"
+                        }
+                    },
+                    "required": ["filename"]
+                }
+            }
+        },
+        # VPP graph trace tools
+        {
+            "type": "function",
+            "function": {
+                "name": "start_trace",
+                "description": "Start VPP graph tracing to see how packets flow through VPP's processing nodes. Useful for debugging packet drops or routing issues.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "instance": {
+                            "type": "string",
+                            "description": "VPP instance: 'core' or 'nat'",
+                            "enum": ["core", "nat"]
+                        },
+                        "input_node": {
+                            "type": "string",
+                            "description": "Input node to trace from. Common: 'dpdk-input' (physical NICs), 'memif-input' (inter-VPP), 'host-interface-input' (veth/tap)"
+                        },
+                        "count": {
+                            "type": "integer",
+                            "description": "Number of packets to trace (default: 50)"
+                        }
+                    },
+                    "required": ["instance", "input_node"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "show_trace",
+                "description": "Show VPP graph trace output - displays how traced packets flowed through VPP's processing nodes",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "instance": {
+                            "type": "string",
+                            "description": "VPP instance: 'core' or 'nat'",
+                            "enum": ["core", "nat"]
+                        },
+                        "max_packets": {
+                            "type": "integer",
+                            "description": "Maximum packets to show (default: 10)"
+                        }
+                    },
+                    "required": ["instance"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_trace_status",
+                "description": "Show trace status on both VPP instances (how many packets have been traced)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "clear_trace",
+                "description": "Clear the trace buffer on a VPP instance",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "instance": {
+                            "type": "string",
+                            "description": "VPP instance: 'core' or 'nat'",
+                            "enum": ["core", "nat"]
+                        }
+                    },
+                    "required": ["instance"]
                 }
             }
         },
@@ -1824,6 +2088,366 @@ def tool_clear_interface_ospf6(config, ctx, interface: str) -> str:
     return f"Removed {interface} from OSPFv3"
 
 
+# =============================================================================
+# Tool Execution - Packet Capture
+# =============================================================================
+
+def _format_size(size_bytes: int) -> str:
+    """Format bytes as human-readable size."""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
+
+
+def tool_start_capture(instance: str, interface: str = "any", direction: str = "rx tx",
+                       max_packets: int = 10000, filename: str = None) -> str:
+    """Start a packet capture on a VPP instance."""
+    import time
+
+    if instance not in ("core", "nat"):
+        return f"Error: instance must be 'core' or 'nat', got '{instance}'"
+
+    # Validate direction
+    valid_directions = ["rx", "tx", "drop", "rx tx", "rx tx drop", "tx rx", "rx drop", "tx drop"]
+    if direction not in valid_directions:
+        return f"Error: invalid direction '{direction}'. Use: rx, tx, drop, 'rx tx', or 'rx tx drop'"
+
+    # Generate filename if not specified (include .pcap so VPP writes with extension)
+    if not filename:
+        filename = f"capture-{instance}-{int(time.time())}.pcap"
+    elif not filename.endswith(".pcap"):
+        filename += ".pcap"
+
+    # Build command
+    cmd = f"pcap trace {direction} intfc {interface} file {filename}"
+    if max_packets and max_packets > 0:
+        cmd += f" max {max_packets}"
+
+    success, output = vpp_exec(cmd, instance)
+    if success:
+        return f"Started capture on {instance}: /tmp/{filename}.pcap (interface: {interface}, direction: {direction})"
+    else:
+        return f"Error starting capture: {output}"
+
+
+def tool_stop_capture(instance: str) -> str:
+    """Stop an active packet capture."""
+    if instance not in ("core", "nat"):
+        return f"Error: instance must be 'core' or 'nat', got '{instance}'"
+
+    success, output = vpp_exec("pcap trace off", instance)
+    if success:
+        if output:
+            return f"Stopped capture on {instance}: {output}"
+        return f"Stopped capture on {instance}"
+    else:
+        return f"Error stopping capture: {output}"
+
+
+def tool_get_capture_status() -> str:
+    """Show active captures on both VPP instances."""
+    import re
+    lines = ["Capture Status:"]
+
+    for instance in ("core", "nat"):
+        socket = VPP_CORE_SOCKET if instance == "core" else VPP_NAT_SOCKET
+        if not Path(socket).exists():
+            lines.append(f"  {instance}: VPP not running")
+            continue
+
+        success, output = vpp_exec("pcap trace status", instance)
+        if success:
+            if not output.strip() or "No pcap" in output or "disabled" in output.lower():
+                lines.append(f"  {instance}: No active capture")
+            else:
+                # Parse "X of Y pkts" to determine if capture is complete
+                match = re.search(r'(\d+)\s+of\s+(\d+)\s+pkts', output)
+                if match:
+                    captured, limit = int(match.group(1)), int(match.group(2))
+                    if captured >= limit:
+                        lines.append(f"  {instance}: COMPLETE - captured {captured}/{limit} packets (limit reached, file written)")
+                    else:
+                        lines.append(f"  {instance}: ACTIVE - captured {captured}/{limit} packets")
+                else:
+                    # Fallback to raw output
+                    lines.append(f"  {instance}: {output.split(chr(10))[0]}")
+        else:
+            lines.append(f"  {instance}: Error - {output}")
+
+    return "\n".join(lines)
+
+
+def tool_list_capture_files() -> str:
+    """List pcap files in /tmp."""
+    import glob
+    from datetime import datetime
+
+    pcap_files = glob.glob("/tmp/*.pcap")
+    if not pcap_files:
+        return "No pcap files found in /tmp"
+
+    # Get file info
+    files = []
+    for f in pcap_files:
+        try:
+            stat = os.stat(f)
+            files.append({
+                "path": f,
+                "name": os.path.basename(f),
+                "size": stat.st_size,
+                "mtime": stat.st_mtime
+            })
+        except OSError:
+            continue
+
+    # Sort by modification time, newest first
+    files.sort(key=lambda x: x["mtime"], reverse=True)
+
+    lines = ["Capture Files:"]
+    for f in files:
+        size_str = _format_size(f["size"])
+        mtime_str = datetime.fromtimestamp(f["mtime"]).strftime("%Y-%m-%d %H:%M:%S")
+        lines.append(f"  {f['name']}: {size_str}, {mtime_str}")
+
+    return "\n".join(lines)
+
+
+def tool_analyze_capture(filename: str) -> str:
+    """Analyze a pcap file using tshark."""
+    import subprocess
+
+    # Resolve path
+    if not filename.startswith("/"):
+        filename = f"/tmp/{filename}"
+    if not filename.endswith(".pcap"):
+        filename += ".pcap"
+
+    if not Path(filename).exists():
+        return f"Error: File not found: {filename}"
+
+    lines = [f"Analysis of {os.path.basename(filename)}:", ""]
+
+    # File info with capinfos
+    try:
+        result = subprocess.run(
+            ["capinfos", "-c", "-d", "-u", "-e", "-y", "-i", filename],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            lines.append("File Information:")
+            for line in result.stdout.strip().split('\n'):
+                if line.strip():
+                    lines.append(f"  {line}")
+            lines.append("")
+    except FileNotFoundError:
+        lines.append("(capinfos not available)")
+    except Exception:
+        pass
+
+    # Protocol hierarchy
+    try:
+        result = subprocess.run(
+            ["tshark", "-r", filename, "-q", "-z", "io,phs"],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            lines.append("Protocol Hierarchy:")
+            for line in result.stdout.strip().split('\n'):
+                if line.strip():
+                    lines.append(f"  {line}")
+            lines.append("")
+    except FileNotFoundError:
+        lines.append("(tshark not available)")
+        return "\n".join(lines)
+    except Exception:
+        pass
+
+    # Top conversations
+    try:
+        result = subprocess.run(
+            ["tshark", "-r", filename, "-q", "-z", "conv,ip"],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            conv_lines = result.stdout.strip().split('\n')
+            lines.append("Top IPv4 Conversations:")
+            # Show header + first 10 data lines
+            for line in conv_lines[:12]:
+                if line.strip():
+                    lines.append(f"  {line}")
+            if len(conv_lines) > 12:
+                lines.append(f"  ... and {len(conv_lines) - 12} more")
+    except Exception:
+        pass
+
+    return "\n".join(lines)
+
+
+def tool_delete_capture(filename: str) -> str:
+    """Delete a pcap file."""
+    # Resolve path
+    if not filename.startswith("/"):
+        filepath = f"/tmp/{filename}"
+    else:
+        filepath = filename
+    if not filepath.endswith(".pcap"):
+        filepath += ".pcap"
+
+    if not Path(filepath).exists():
+        return f"Error: File not found: {filepath}"
+
+    try:
+        os.remove(filepath)
+        return f"Deleted: {filepath}"
+    except OSError as e:
+        return f"Error deleting file: {e}"
+
+
+def tool_tshark_query(filename: str, display_filter: str = None,
+                      fields: str = None, max_packets: int = 50) -> str:
+    """Run a tshark query on a pcap file for detailed analysis."""
+    import subprocess
+
+    # Resolve path
+    if not filename.startswith("/"):
+        filename = f"/tmp/{filename}"
+    if not filename.endswith(".pcap"):
+        filename += ".pcap"
+
+    if not Path(filename).exists():
+        return f"Error: File not found: {filename}"
+
+    # Build tshark command
+    cmd = ["tshark", "-r", filename]
+
+    # Add display filter
+    if display_filter:
+        cmd.extend(["-Y", display_filter])
+
+    # Add field extraction or use default summary
+    if fields:
+        cmd.append("-T")
+        cmd.append("fields")
+        for field in fields.split(","):
+            cmd.extend(["-e", field.strip()])
+        cmd.extend(["-E", "header=y", "-E", "separator=\t"])
+
+    # Limit output
+    cmd.extend(["-c", str(max_packets)])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode != 0 and result.stderr.strip():
+            return f"Error: {result.stderr.strip()}"
+
+        output = result.stdout.strip()
+        if not output:
+            filter_msg = f" matching '{display_filter}'" if display_filter else ""
+            return f"No packets found{filter_msg}"
+
+        # Count lines and truncate if needed
+        lines = output.split('\n')
+        if len(lines) > 60:
+            output = '\n'.join(lines[:60])
+            output += f"\n... ({len(lines) - 60} more lines)"
+
+        return output
+
+    except subprocess.TimeoutExpired:
+        return "Error: Query timed out"
+    except FileNotFoundError:
+        return "Error: tshark not installed"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# =============================================================================
+# Tool Execution - VPP Graph Trace
+# =============================================================================
+
+def tool_start_trace(instance: str, input_node: str, count: int = 50) -> str:
+    """Start VPP graph tracing."""
+    if instance not in ("core", "nat"):
+        return f"Error: instance must be 'core' or 'nat', got '{instance}'"
+
+    cmd = f"trace add {input_node} {count}"
+    success, output = vpp_exec(cmd, instance)
+
+    if success:
+        return f"Started tracing {count} packets from {input_node} on {instance}"
+    else:
+        return f"Error starting trace: {output}"
+
+
+def tool_show_trace(instance: str, max_packets: int = 10) -> str:
+    """Show VPP graph trace output."""
+    import re
+
+    if instance not in ("core", "nat"):
+        return f"Error: instance must be 'core' or 'nat', got '{instance}'"
+
+    success, output = vpp_exec(f"show trace max {max_packets}", instance)
+
+    if success:
+        # Check if there are actual packet traces (not just "No packets in trace buffer" messages)
+        packets = len(re.findall(r'^Packet \d+', output, re.MULTILINE))
+        if packets == 0:
+            return "No packets traced. Use start_trace to begin tracing."
+        # Truncate if too long
+        lines = output.split('\n')
+        if len(lines) > 100:
+            output = '\n'.join(lines[:100])
+            output += f"\n... ({len(lines) - 100} more lines)"
+        return output
+    else:
+        return f"Error getting trace: {output}"
+
+
+def tool_get_trace_status() -> str:
+    """Show trace status on both VPP instances."""
+    import re
+    lines = ["Trace Status:"]
+
+    for instance in ("core", "nat"):
+        socket = VPP_CORE_SOCKET if instance == "core" else VPP_NAT_SOCKET
+        if not Path(socket).exists():
+            lines.append(f"  {instance}: VPP not running")
+            continue
+
+        # Get trace and count actual "Packet N" entries (across all threads)
+        success, output = vpp_exec("show trace", instance)
+        if success:
+            packets = len(re.findall(r'^Packet \d+', output, re.MULTILINE))
+            if packets > 0:
+                lines.append(f"  {instance}: {packets} packets traced")
+            else:
+                lines.append(f"  {instance}: No packets traced")
+        else:
+            lines.append(f"  {instance}: Error - {output}")
+
+    return "\n".join(lines)
+
+
+def tool_clear_trace(instance: str) -> str:
+    """Clear trace buffer."""
+    if instance not in ("core", "nat"):
+        return f"Error: instance must be 'core' or 'nat', got '{instance}'"
+
+    success, output = vpp_exec("clear trace", instance)
+    if success:
+        return f"Trace buffer cleared on {instance}"
+    else:
+        return f"Error clearing trace: {output}"
+
+
 def tool_ask_user(question: str, context: str = None) -> str:
     """Ask the user a clarifying question and return their answer."""
     print()
@@ -1986,6 +2610,50 @@ def execute_tool(name: str, args: dict, config, ctx) -> str:
         if name == "clear_interface_ospf6":
             return tool_clear_interface_ospf6(config, ctx, interface=args.get("interface", ""))
 
+        # Packet capture tools - don't need config
+        if name == "start_capture":
+            return tool_start_capture(
+                instance=args.get("instance", "core"),
+                interface=args.get("interface", "any"),
+                direction=args.get("direction", "rx tx"),
+                max_packets=args.get("max_packets", 10000),
+                filename=args.get("filename")
+            )
+        if name == "stop_capture":
+            return tool_stop_capture(instance=args.get("instance", "core"))
+        if name == "get_capture_status":
+            return tool_get_capture_status()
+        if name == "list_capture_files":
+            return tool_list_capture_files()
+        if name == "analyze_capture":
+            return tool_analyze_capture(filename=args.get("filename", ""))
+        if name == "delete_capture":
+            return tool_delete_capture(filename=args.get("filename", ""))
+        if name == "tshark_query":
+            return tool_tshark_query(
+                filename=args.get("filename", ""),
+                display_filter=args.get("display_filter"),
+                fields=args.get("fields"),
+                max_packets=args.get("max_packets", 50)
+            )
+
+        # VPP graph trace tools
+        if name == "start_trace":
+            return tool_start_trace(
+                instance=args.get("instance", "core"),
+                input_node=args.get("input_node", "dpdk-input"),
+                count=args.get("count", 50)
+            )
+        if name == "show_trace":
+            return tool_show_trace(
+                instance=args.get("instance", "core"),
+                max_packets=args.get("max_packets", 10)
+            )
+        if name == "get_trace_status":
+            return tool_get_trace_status()
+        if name == "clear_trace":
+            return tool_clear_trace(instance=args.get("instance", "core"))
+
         # Interactive tool - doesn't need config
         if name == "ask_user":
             return tool_ask_user(
@@ -2033,8 +2701,32 @@ BGP supports multiple peers:
 - Use remove_bgp_peer to remove peers by IP address
 - Use get_bgp_config to see all configured peers before making changes
 
+Packet Capture (pcap files for Wireshark):
+- Use start_capture to capture packets on VPP core or NAT instances
+- The "core" instance handles main routing; "nat" handles NAT translation
+- Captures are written to /tmp as .pcap files
+- Use stop_capture to stop and finalize a capture
+- Use analyze_capture to get protocol statistics and top conversations
+- Use tshark_query for detailed inspection - filter by protocol, extract specific fields
+  Example filters: 'dns', 'tcp.port==80', 'http', 'icmp'
+  Example fields: 'dns.qry.name,dns.a' or 'http.host,http.request.uri'
+- Use list_capture_files to see available capture files
+
+VPP Graph Trace (debug packet flow through VPP nodes):
+- Use start_trace to trace packets through VPP's processing graph
+- Use show_trace to see how packets were processed (which nodes, what decisions)
+- Use get_trace_status to check if traces are available
+- Use clear_trace to reset the trace buffer
+- Trace nodes by category:
+  * Interface input (all traffic): dpdk-input, memif-input, host-interface-input
+  * Protocol filter: ip4-input, ip6-input, arp-input, ip4-icmp-input, icmp6-input
+  * Routing: ip4-lookup, ip6-lookup, ip4-rewrite, ip6-rewrite
+  * Policy: abf-input-ip4, abf-input-ip6, acl-plugin-in-ip4-fa, acl-plugin-in-ip6-fa
+  * NAT (on NAT instance): nat44-ed-in2out, nat44-ed-out2in
+  * Local delivery: ip4-local, ip6-local
+
 Important notes:
-- Changes are staged until 'apply'. You cannot apply changes directly.
+- Configuration changes are staged until 'apply'. You cannot apply changes directly.
 - At least one IP address (IPv4 or IPv6) is required for interfaces.
 - VLAN IDs must be 1-4094.
 

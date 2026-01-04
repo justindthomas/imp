@@ -41,7 +41,7 @@ router bgp {{ bgp.asn }}
 {% endif %}
 {% endfor %}
  exit-address-family
-{% set has_ipv6_peers = bgp.peers | selectattr('peer_ip', 'search', ':') | list | length > 0 %}
+{% set has_ipv6_peers = bgp.peers | selectattr('peer_ip', 'contains', ':') | list | length > 0 %}
 {% if has_ipv6_peers %}
  !
  address-family ipv6 unicast
@@ -66,9 +66,9 @@ exit
 {# OSPF prefix-lists for redistribution #}
 ip prefix-list LOOPBACKS seq 5 permit 0.0.0.0/0 ge 32 le 32
 {% set seq = namespace(num=10) %}
-{% for loop in loopbacks %}
-{% if loop.ipv4 %}
-ip prefix-list LOCAL-ROUTES seq {{ seq.num }} permit {{ loop.ipv4 }}/{{ loop.ipv4_prefix }}
+{% for lb in loopbacks %}
+{% if lb.ipv4 %}
+ip prefix-list LOCAL-ROUTES seq {{ seq.num }} permit {{ lb.ipv4 }}/{{ lb.ipv4_prefix }}
 {% set seq.num = seq.num + 10 %}
 {% endif %}
 {% endfor %}
@@ -98,9 +98,9 @@ router ospf
 {% endif %}
  redistribute connected route-map OSPF-REDISTRIBUTE
 {# Loopback interfaces #}
-{% for loop in loopbacks %}
-{% if loop.ospf_area is not none and loop.ipv4 %}
- network {{ loop.ipv4 }}/32 area {{ loop.ospf_area }}
+{% for lb in loopbacks %}
+{% if lb.ospf_area is not none and lb.ipv4 %}
+ network {{ lb.ipv4 }}/32 area {{ lb.ospf_area }}
 {% endif %}
 {% endfor %}
 {# Internal interfaces #}
@@ -130,9 +130,9 @@ router ospf
 {% endif %}
 {% endfor %}
 {# Passive interfaces - loopbacks #}
-{% for loop in loopbacks %}
-{% if loop.ospf_passive and loop.create_lcp %}
- passive-interface loop{{ loop.instance }}
+{% for lb in loopbacks %}
+{% if lb.ospf_passive and lb.create_lcp %}
+ passive-interface loop{{ lb.instance }}
 {% endif %}
 {% endfor %}
 {# Passive interfaces - internal #}
@@ -167,9 +167,9 @@ exit
 {% if ospf6.enabled %}
 {# OSPFv3 prefix-lists for redistribution #}
 {% set seq6 = namespace(num=10) %}
-{% for loop in loopbacks %}
-{% if loop.ipv6 %}
-ipv6 prefix-list LOCAL-ROUTES6 seq {{ seq6.num }} permit {{ loop.ipv6 }}/{{ loop.ipv6_prefix }}
+{% for lb in loopbacks %}
+{% if lb.ipv6 %}
+ipv6 prefix-list LOCAL-ROUTES6 seq {{ seq6.num }} permit {{ lb.ipv6 }}/{{ lb.ipv6_prefix }}
 {% set seq6.num = seq6.num + 10 %}
 {% endif %}
 {% endfor %}
@@ -199,11 +199,11 @@ router ospf6
 exit
 !
 {# OSPFv3 interface-level area assignment #}
-{% for loop in loopbacks %}
-{% if loop.ospf6_area is not none and loop.ipv6 and loop.create_lcp %}
-interface loop{{ loop.instance }}
- ipv6 ospf6 area {{ loop.ospf6_area }}
-{% if loop.ospf6_passive %}
+{% for lb in loopbacks %}
+{% if lb.ospf6_area is not none and lb.ipv6 and lb.create_lcp %}
+interface loop{{ lb.instance }}
+ ipv6 ospf6 area {{ lb.ospf6_area }}
+{% if lb.ospf6_passive %}
  ipv6 ospf6 passive
 {% endif %}
 exit

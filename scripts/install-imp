@@ -528,7 +528,8 @@ EOF
         python3-jinja2 \
         python3-prompt-toolkit \
         python3-requests \
-        python3-rich
+        python3-rich \
+        tshark
 
     # -------------------------------------------------------------------------
     # Setup fd.io repository and install VPP
