@@ -60,9 +60,83 @@ abf:
     - container_network        # Don't NAT container traffic
     - bypass_pairs             # Respect bypass rules from config
 
+# Routing: prefixes to announce via BGP and route to module
+routing:
+  advertise:
+    - config_field: bgp_prefix      # Field name in module.config
+      via_connection: external      # Route via external connection
+      address_family: ipv4
+
+# CLI commands for configuring this module
+commands:
+  # Mappings management
+  - path: mappings/add
+    description: "Add a NAT mapping (internal network to public pool)"
+    action: array_append
+    target: mappings
+    params:
+      - name: source_network
+        type: ipv4_cidr
+        prompt: "Source network (CIDR, e.g., 10.0.0.0/24)"
+      - name: nat_pool
+        type: ipv4_cidr
+        prompt: "NAT pool (CIDR, e.g., 23.177.24.96/30)"
+
+  - path: mappings/delete
+    description: "Delete a NAT mapping"
+    action: array_remove
+    target: mappings
+    key: source_network
+
+  - path: mappings/list
+    description: "List NAT mappings"
+    action: array_list
+    target: mappings
+    format: "{source_network} -> {nat_pool}"
+
+  # Bypass rules management
+  - path: bypass/add
+    description: "Add a bypass rule (traffic that skips NAT)"
+    action: array_append
+    target: bypass_pairs
+    params:
+      - name: source
+        type: ipv4_cidr
+        prompt: "Source network (CIDR)"
+      - name: destination
+        type: ipv4_cidr
+        prompt: "Destination network (CIDR)"
+
+  - path: bypass/delete
+    description: "Delete a bypass rule"
+    action: array_remove
+    target: bypass_pairs
+    key: source
+
+  - path: bypass/list
+    description: "List bypass rules"
+    action: array_list
+    target: bypass_pairs
+    format: "{source} -> {destination}"
+
+  # BGP prefix
+  - path: set-prefix
+    description: "Set the BGP announcement prefix"
+    action: set_value
+    target: bgp_prefix
+    params:
+      - name: prefix
+        type: ipv4_cidr
+        prompt: "Prefix to announce via BGP (CIDR)"
+
+  - path: show
+    description: "Show NAT module configuration"
+    action: show
+    target: ""
+
 # VPP commands (Jinja2 template rendered with module context)
 # Available variables: module.connections, module.config, external, internal, container, etc.
-commands: |
+vpp_commands: |
   det44 plugin enable
   {% set int_conn = module.connections | selectattr('name', 'eq', 'internal') | first %}
   {% set ext_conn = module.connections | selectattr('name', 'eq', 'external') | first %}

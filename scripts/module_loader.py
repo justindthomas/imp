@@ -62,6 +62,42 @@ class ModuleABF:
 
 
 @dataclass
+class ModuleAdvertise:
+    """A prefix to advertise via BGP and route to the module."""
+    config_field: str  # Field name in module.config containing the prefix
+    via_connection: str  # Connection name to route traffic through
+    address_family: str = "ipv4"  # "ipv4" or "ipv6"
+
+
+@dataclass
+class ModuleRouting:
+    """Routing configuration for the module."""
+    advertise: list[ModuleAdvertise] = field(default_factory=list)
+
+
+@dataclass
+class ModuleCommandParam:
+    """A parameter for a module CLI command."""
+    name: str
+    type: str  # "ipv4_cidr", "ipv6_cidr", "string", "integer", "boolean", "choice"
+    prompt: str = ""
+    required: bool = True
+    choices: list[str] = field(default_factory=list)  # For "choice" type
+
+
+@dataclass
+class ModuleCommand:
+    """A CLI command defined by a module."""
+    path: str  # e.g., "mappings/add", "set-prefix"
+    description: str
+    action: str  # "array_append", "array_remove", "array_list", "set_value", "show"
+    target: str  # Config field to operate on
+    params: list[ModuleCommandParam] = field(default_factory=list)
+    key: Optional[str] = None  # For array_remove: which field is the key
+    format: Optional[str] = None  # For array_list: display format string
+
+
+@dataclass
 class ModuleConfigSchemaField:
     """A single field in the config schema."""
     name: str
@@ -87,13 +123,15 @@ class ModuleDefinition:
     display_name: str
     description: str
     connections: list[ModuleConnection]
-    commands: str  # Jinja2 template for VPP commands
+    vpp_commands: str  # Jinja2 template for VPP commands
     plugins: list[str] = field(default_factory=list)
     disable_plugins: list[str] = field(default_factory=list)
     cpu: ModuleCPU = field(default_factory=ModuleCPU)
     config_schema: list[ModuleConfigSchemaField] = field(default_factory=list)
     show_commands: list[ModuleShowCommand] = field(default_factory=list)
     abf: Optional[ModuleABF] = None
+    routing: Optional[ModuleRouting] = None
+    cli_commands: list[ModuleCommand] = field(default_factory=list)
 
     @property
     def connection_names(self) -> list[str]:
@@ -135,8 +173,10 @@ class VPPModuleInstance:
     disable_plugins: list[str] = field(default_factory=list)
     show_commands: list[ModuleShowCommand] = field(default_factory=list)
     abf: Optional[ModuleABF] = None
-    commands: str = ""  # Raw Jinja2 template
-    commands_rendered: str = ""  # Rendered commands (filled at apply time)
+    routing: Optional[ModuleRouting] = None
+    cli_commands: list[ModuleCommand] = field(default_factory=list)
+    vpp_commands: str = ""  # Raw Jinja2 template
+    vpp_commands_rendered: str = ""  # Rendered commands (filled at apply time)
 
 
 # =============================================================================
@@ -174,7 +214,7 @@ def validate_module_definition(data: dict) -> list[str]:
     errors = []
 
     # Required fields
-    required = ['name', 'topology', 'commands']
+    required = ['name', 'topology', 'vpp_commands']
     for field_name in required:
         if field_name not in data:
             errors.append(f"Missing required field: {field_name}")
@@ -190,10 +230,10 @@ def validate_module_definition(data: dict) -> list[str]:
     # Validate topology.connections
     topology = data.get('topology', {})
     connections = topology.get('connections', [])
+    conn_names = []
     if not connections:
         errors.append("topology.connections must have at least one connection")
     else:
-        conn_names = []
         for i, conn in enumerate(connections):
             if 'name' not in conn:
                 errors.append(f"topology.connections[{i}]: missing 'name' field")
@@ -206,7 +246,6 @@ def validate_module_definition(data: dict) -> list[str]:
     abf = data.get('abf', {})
     if abf:
         source = abf.get('source')
-        match = abf.get('match')
 
         # If using internal connection reference in ABF
         if source and source not in ['internal_interfaces']:
@@ -214,14 +253,14 @@ def validate_module_definition(data: dict) -> list[str]:
             if source not in conn_names and connections:
                 errors.append(f"ABF source '{source}' is not a valid connection name or 'internal_interfaces'")
 
-    # Validate Jinja2 template syntax
-    commands = data.get('commands', '')
-    if commands and Environment:
+    # Validate Jinja2 template syntax for VPP commands
+    vpp_commands = data.get('vpp_commands', '')
+    if vpp_commands and Environment:
         try:
             env = Environment()
-            env.parse(commands)
+            env.parse(vpp_commands)
         except TemplateSyntaxError as e:
-            errors.append(f"Jinja2 template syntax error in commands: {e}")
+            errors.append(f"Jinja2 template syntax error in vpp_commands: {e}")
 
     # Validate config_schema field types
     config_schema = data.get('config_schema', {})
@@ -235,6 +274,40 @@ def validate_module_definition(data: dict) -> list[str]:
             field_format = field_def.get('format')
             if field_format and field_format not in valid_formats:
                 errors.append(f"config_schema.{field_name}: invalid format '{field_format}'")
+
+    # Validate routing.advertise
+    routing = data.get('routing', {})
+    if routing:
+        for i, adv in enumerate(routing.get('advertise', [])):
+            if 'config_field' not in adv:
+                errors.append(f"routing.advertise[{i}]: missing 'config_field'")
+            if 'via_connection' not in adv:
+                errors.append(f"routing.advertise[{i}]: missing 'via_connection'")
+            elif adv['via_connection'] not in conn_names:
+                errors.append(f"routing.advertise[{i}]: via_connection '{adv['via_connection']}' not found in connections")
+            af = adv.get('address_family', 'ipv4')
+            if af not in ['ipv4', 'ipv6']:
+                errors.append(f"routing.advertise[{i}]: address_family must be 'ipv4' or 'ipv6'")
+
+    # Validate CLI commands
+    valid_actions = ['array_append', 'array_remove', 'array_list', 'set_value', 'show']
+    valid_param_types = ['ipv4_cidr', 'ipv6_cidr', 'ipv4', 'ipv6', 'string', 'integer', 'boolean', 'choice']
+    for i, cmd in enumerate(data.get('commands', [])):
+        if 'path' not in cmd:
+            errors.append(f"commands[{i}]: missing 'path'")
+        if 'action' not in cmd:
+            errors.append(f"commands[{i}]: missing 'action'")
+        elif cmd['action'] not in valid_actions:
+            errors.append(f"commands[{i}]: invalid action '{cmd['action']}'")
+        if 'target' not in cmd:
+            errors.append(f"commands[{i}]: missing 'target'")
+        # Validate params
+        for j, param in enumerate(cmd.get('params', [])):
+            if 'name' not in param:
+                errors.append(f"commands[{i}].params[{j}]: missing 'name'")
+            param_type = param.get('type', 'string')
+            if param_type not in valid_param_types:
+                errors.append(f"commands[{i}].params[{j}]: invalid type '{param_type}'")
 
     return errors
 
@@ -359,18 +432,56 @@ def parse_module_definition(data: dict) -> ModuleDefinition:
             prefix_field=abf_data.get('prefix_field')
         )
 
+    # Parse routing config
+    routing_data = data.get('routing')
+    routing = None
+    if routing_data:
+        advertise_list = []
+        for adv in routing_data.get('advertise', []):
+            advertise_list.append(ModuleAdvertise(
+                config_field=adv['config_field'],
+                via_connection=adv['via_connection'],
+                address_family=adv.get('address_family', 'ipv4')
+            ))
+        routing = ModuleRouting(advertise=advertise_list)
+
+    # Parse CLI commands
+    cli_commands = []
+    for cmd_data in data.get('commands', []):
+        # Parse params
+        params = []
+        for param_data in cmd_data.get('params', []):
+            params.append(ModuleCommandParam(
+                name=param_data['name'],
+                type=param_data.get('type', 'string'),
+                prompt=param_data.get('prompt', ''),
+                required=param_data.get('required', True),
+                choices=param_data.get('choices', [])
+            ))
+        cli_commands.append(ModuleCommand(
+            path=cmd_data['path'],
+            description=cmd_data.get('description', ''),
+            action=cmd_data['action'],
+            target=cmd_data['target'],
+            params=params,
+            key=cmd_data.get('key'),
+            format=cmd_data.get('format')
+        ))
+
     return ModuleDefinition(
         name=data['name'],
         display_name=data.get('display_name', data['name']),
         description=data.get('description', ''),
         connections=connections,
-        commands=data.get('commands', ''),
+        vpp_commands=data.get('vpp_commands', ''),
         plugins=data.get('plugins', []),
         disable_plugins=data.get('disable_plugins', []),
         cpu=cpu,
         config_schema=config_schema,
         show_commands=show_commands,
-        abf=abf
+        abf=abf,
+        routing=routing,
+        cli_commands=cli_commands
     )
 
 
@@ -612,7 +723,9 @@ def create_module_instance(
         disable_plugins=module_def.disable_plugins,
         show_commands=module_def.show_commands,
         abf=module_def.abf,
-        commands=module_def.commands
+        routing=module_def.routing,
+        cli_commands=module_def.cli_commands,
+        vpp_commands=module_def.vpp_commands
     )
 
 

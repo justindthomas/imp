@@ -50,8 +50,40 @@ abf:
   match: destination_prefix
   prefix_field: prefix  # Use config.prefix value
 
+# Routing: the IPv4 pool needs to be announced and routed
+routing:
+  advertise:
+    - config_field: pool
+      via_connection: translation
+      address_family: ipv4
+
+# CLI commands for configuring this module
+commands:
+  - path: set-prefix
+    description: "Set the NAT64 prefix (default: 64:ff9b::/96)"
+    action: set_value
+    target: prefix
+    params:
+      - name: prefix
+        type: ipv6_cidr
+        prompt: "NAT64 prefix (CIDR, default 64:ff9b::/96)"
+
+  - path: set-pool
+    description: "Set the IPv4 address pool"
+    action: set_value
+    target: pool
+    params:
+      - name: pool
+        type: ipv4_cidr
+        prompt: "IPv4 pool (CIDR)"
+
+  - path: show
+    description: "Show NAT64 module configuration"
+    action: show
+    target: ""
+
 # VPP commands (Jinja2 template rendered with module context)
-commands: |
+vpp_commands: |
   {% set conn = module.connections | first %}
   nat64 add pool address {{ module.config.pool }}
   nat64 add interface memif{{ conn.socket_id }}/0 in

@@ -1339,13 +1339,13 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path,
             for err in errors:
                 warn(f"Module warning: {err}")
 
-        # Render module commands using Jinja2
+        # Render module VPP commands using Jinja2
         for module in module_instances:
-            if module.enabled and module.commands:
+            if module.enabled and module.vpp_commands:
                 try:
-                    # Create a template from the module's commands
-                    cmd_template = env.from_string(module.commands)
-                    module.commands_rendered = cmd_template.render(
+                    # Create a template from the module's VPP commands
+                    cmd_template = env.from_string(module.vpp_commands)
+                    module.vpp_commands_rendered = cmd_template.render(
                         module=module,
                         external=config.external,
                         internal=config.internal,
@@ -1353,8 +1353,8 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path,
                     )
                 except Exception as e:
                     if not quiet:
-                        warn(f"Failed to render commands for module {module.name}: {e}")
-                    module.commands_rendered = f"# Error rendering commands: {e}"
+                        warn(f"Failed to render VPP commands for module {module.name}: {e}")
+                    module.vpp_commands_rendered = f"# Error rendering commands: {e}"
 
     # Prepare template context
     context = {

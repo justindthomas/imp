@@ -10,5 +10,5 @@ set interface state memif{{ conn.socket_id }}/0 up
 set interface ip address memif{{ conn.socket_id }}/0 {{ conn.module_ip }}/{{ conn.prefix }}
 {% endfor %}
 
-# Module-specific commands (from YAML)
-{{ module.commands_rendered }}
+# Module-specific VPP commands (from YAML)
+{{ module.vpp_commands_rendered }}

@@ -1325,9 +1325,13 @@ def tool_get_config_summary(config) -> str:
     else:
         lines.append("BGP: Disabled")
 
-    lines.append(f"NAT prefix: {config.nat.bgp_prefix}")
-    lines.append(f"NAT mappings: {len(config.nat.mappings)}")
-    lines.append(f"NAT bypass rules: {len(config.nat.bypass_pairs)}")
+    nat_config = get_module_config(config, 'nat')
+    if nat_config:
+        lines.append(f"NAT prefix: {nat_config.get('bgp_prefix', 'not set')}")
+        lines.append(f"NAT mappings: {len(nat_config.get('mappings', []))}")
+        lines.append(f"NAT bypass rules: {len(nat_config.get('bypass_pairs', []))}")
+    else:
+        lines.append("NAT: Not configured (use 'imp config modules enable nat')")
     lines.append(f"Loopbacks: {len(config.loopbacks)}")
     lines.append(f"BVI domains: {len(config.bvi_domains)}")
     lines.append(f"VLAN passthrough: {len(config.vlan_passthrough)}")

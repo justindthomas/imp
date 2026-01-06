@@ -52,8 +52,11 @@ imp> config modules install nat
 # Enable NAT module
 imp> config modules enable nat
 
-# Configure NAT mappings
-imp> config nat mappings add 192.168.0.0/16 23.177.24.96/30
+# Configure NAT mappings (uses module-defined CLI commands)
+imp> config nat mappings add
+  Source network (CIDR, e.g., 10.0.0.0/24): 192.168.0.0/16
+  NAT pool (CIDR, e.g., 23.177.24.96/30): 23.177.24.96/30
+[+] Added: 192.168.0.0/16 -> 23.177.24.96/30
 
 # Apply changes (generates configs, restarts services)
 imp> apply
@@ -103,7 +106,19 @@ abf:                                   # Traffic steering rules
     - container_network
     - bypass_pairs
 
-commands: |                            # VPP commands (Jinja2)
+routing:                               # BGP/FRR integration
+  advertise:
+    - config_field: bgp_prefix
+      via_connection: external
+      address_family: ipv4
+
+commands:                              # CLI commands for configuration
+  - path: mappings/add
+    action: array_append
+    target: mappings
+    # ... (see CLI Commands section)
+
+vpp_commands: |                        # VPP commands (Jinja2)
   det44 plugin enable
   ...
 ```
@@ -126,7 +141,9 @@ commands: |                            # VPP commands (Jinja2)
 | `config_schema` | dict | Schema for user-configurable fields |
 | `show_commands` | list | VPP show commands exposed in CLI |
 | `abf` | dict | ACL-based forwarding rules |
-| `commands` | string | Jinja2 template for VPP commands |
+| `routing` | dict | BGP/FRR routing integration |
+| `commands` | list | CLI commands for configuration |
+| `vpp_commands` | string | Jinja2 template for VPP commands |
 
 ### ABF Configuration
 
@@ -148,9 +165,100 @@ abf:
   prefix_field: prefix           # Use config.prefix value
 ```
 
-### Commands Template Variables
+### Routing Configuration
 
-The `commands` field is a Jinja2 template with access to:
+The `routing` section declares prefixes that should be announced via BGP and routed to the module. This replaces hardcoded module-specific routing.
+
+```yaml
+routing:
+  advertise:
+    - config_field: bgp_prefix      # Field in module.config containing prefix
+      via_connection: external      # Connection to route traffic through
+      address_family: ipv4          # ipv4 or ipv6
+```
+
+When applied:
+1. FRR creates a static route for the prefix via the module's connection
+2. BGP announces the prefix to peers (if BGP is enabled)
+
+This is generic - any module can advertise prefixes, not just NAT.
+
+### CLI Commands
+
+Modules can define their own CLI commands for configuration. These are automatically registered under `config <module> <command>`.
+
+```yaml
+commands:
+  # Add item to an array
+  - path: mappings/add
+    description: "Add a NAT mapping"
+    action: array_append
+    target: mappings              # Config field (array)
+    params:
+      - name: source_network
+        type: ipv4_cidr
+        prompt: "Source network (CIDR)"
+      - name: nat_pool
+        type: ipv4_cidr
+        prompt: "NAT pool (CIDR)"
+
+  # Remove item from an array
+  - path: mappings/delete
+    description: "Delete a NAT mapping"
+    action: array_remove
+    target: mappings
+    key: source_network           # Field to match for deletion
+
+  # List array contents
+  - path: mappings/list
+    description: "List NAT mappings"
+    action: array_list
+    target: mappings
+    format: "{source_network} -> {nat_pool}"
+
+  # Set a scalar value
+  - path: set-prefix
+    description: "Set BGP prefix"
+    action: set_value
+    target: bgp_prefix
+    params:
+      - name: prefix
+        type: ipv4_cidr
+        prompt: "Prefix to announce"
+
+  # Show module config
+  - path: show
+    description: "Show module configuration"
+    action: show
+    target: ""
+```
+
+**Action Types:**
+
+| Action | Description |
+|--------|-------------|
+| `array_append` | Add item to array, prompting for params |
+| `array_remove` | List array, prompt for item to delete |
+| `array_list` | Display array contents |
+| `set_value` | Set a scalar config field |
+| `show` | Display module configuration |
+
+**Parameter Types:**
+
+| Type | Validation |
+|------|------------|
+| `ipv4_cidr` | Valid IPv4 CIDR (e.g., 10.0.0.0/8) |
+| `ipv6_cidr` | Valid IPv6 CIDR (e.g., 2001:db8::/32) |
+| `ipv4` | Valid IPv4 address |
+| `ipv6` | Valid IPv6 address |
+| `string` | Any string |
+| `integer` | Integer value |
+| `boolean` | true/false, yes/no |
+| `choice` | One of predefined choices |
+
+### VPP Commands Template
+
+The `vpp_commands` field is a Jinja2 template with access to:
 
 | Variable | Description |
 |----------|-------------|
@@ -187,16 +295,21 @@ imp> config modules disable nat
 
 ### Module Configuration
 
-Once enabled, configure module-specific settings:
+Once enabled, use module-defined commands:
 
 ```bash
-# NAT configuration
-imp> config nat mappings add 192.168.0.0/16 23.177.24.96/30
-imp> config nat bypass add 192.168.0.0/16 10.0.0.0/8
-imp> config nat set-prefix 23.177.24.96/29
+# NAT configuration (commands defined in nat.yaml)
+imp> config nat mappings add        # Interactive prompts
+imp> config nat mappings list       # Show all mappings
+imp> config nat mappings delete     # Interactive deletion
+imp> config nat bypass add          # Add bypass rule
+imp> config nat set-prefix          # Set BGP prefix
+imp> config nat show                # Show full config
 
-# View configuration
-imp> config nat show
+# NAT64 configuration (commands defined in nat64.yaml)
+imp> config nat64 set-prefix
+imp> config nat64 set-pool
+imp> config nat64 show
 ```
 
 ### Applying Changes
@@ -242,7 +355,23 @@ config_schema:
     type: string
     description: "A custom setting"
 
-commands: |
+# Define CLI commands for your module
+commands:
+  - path: set-setting
+    description: "Set the custom setting"
+    action: set_value
+    target: setting1
+    params:
+      - name: value
+        type: string
+        prompt: "Setting value"
+
+  - path: show
+    description: "Show module config"
+    action: show
+    target: ""
+
+vpp_commands: |
   {% set conn = module.connections | first %}
   # My custom VPP commands here
   my_plugin enable
@@ -253,7 +382,9 @@ commands: |
 
 ```bash
 imp> config modules enable mymodule
-imp> config mymodule setting1 value
+imp> config mymodule set-setting
+  Setting value: my-value
+[+] Set setting1 = my-value
 imp> apply
 ```
 
@@ -275,8 +406,8 @@ imp> shell mymodule
 |-------|-------|----------|
 | "Module 'X' not found" | Not installed | `config modules install X` |
 | "YAML syntax error" | Invalid YAML | Check YAML syntax |
-| "Missing required field" | Incomplete YAML | Add required fields |
-| "Template syntax error" | Invalid Jinja2 in commands | Check template syntax |
+| "Missing required field" | Incomplete YAML | Add required fields (`name`, `topology`, `vpp_commands`) |
+| "Template syntax error" | Invalid Jinja2 in vpp_commands | Check template syntax |
 | Socket not found | Service not running | Check `systemctl status vpp-<name>` |
 
 ### Checking Module Status
@@ -299,10 +430,12 @@ vppctl -s /run/vpp/nat-cli.sock
 
 The module loader validates:
 1. YAML syntax
-2. Required fields (`name`, `topology.connections`, `commands`)
+2. Required fields (`name`, `topology.connections`, `vpp_commands`)
 3. Unique connection names
-4. Valid Jinja2 template syntax
+4. Valid Jinja2 template syntax in `vpp_commands`
 5. Config schema field types
+6. CLI command definitions (action, target, params)
+7. Routing advertise references (config_field, via_connection)
 
 Validation errors are shown during `apply`.
 
@@ -395,7 +528,48 @@ abf:
     - container_network
     - bypass_pairs
 
-commands: |
+routing:
+  advertise:
+    - config_field: bgp_prefix
+      via_connection: external
+      address_family: ipv4
+
+commands:
+  - path: mappings/add
+    description: "Add a NAT mapping"
+    action: array_append
+    target: mappings
+    params:
+      - name: source_network
+        type: ipv4_cidr
+        prompt: "Source network (CIDR)"
+      - name: nat_pool
+        type: ipv4_cidr
+        prompt: "NAT pool (CIDR)"
+
+  - path: mappings/delete
+    action: array_remove
+    target: mappings
+    key: source_network
+
+  - path: mappings/list
+    action: array_list
+    target: mappings
+    format: "{source_network} -> {nat_pool}"
+
+  - path: set-prefix
+    action: set_value
+    target: bgp_prefix
+    params:
+      - name: prefix
+        type: ipv4_cidr
+        prompt: "BGP prefix (CIDR)"
+
+  - path: show
+    action: show
+    target: ""
+
+vpp_commands: |
   det44 plugin enable
   {% set int_conn = module.connections | selectattr('name', 'eq', 'internal') | first %}
   {% set ext_conn = module.connections | selectattr('name', 'eq', 'external') | first %}

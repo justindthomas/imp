@@ -25,6 +25,16 @@ VPP_CORE_SOCKET = Path("/run/vpp/core-cli.sock")
 VPP_NAT_SOCKET = Path("/run/vpp/nat-cli.sock")
 
 
+def _get_nat_config(config) -> dict:
+    """Get NAT config from modules list, returns dict or empty dict."""
+    if not config or not hasattr(config, 'modules') or not config.modules:
+        return {}
+    for module in config.modules:
+        if module.get('name') == 'nat' and module.get('enabled', False):
+            return module.get('config', {})
+    return {}
+
+
 # =============================================================================
 # Change Types and Data Structures
 # =============================================================================
@@ -379,55 +389,79 @@ class ConfigDiffEngine:
     def _diff_nat_mappings(self) -> None:
         """Compare NAT (det44) mappings."""
         def make_key(m):
-            return (m.source_network, m.nat_pool)
+            src = m.get('source_network') if isinstance(m, dict) else m.source_network
+            pool = m.get('nat_pool') if isinstance(m, dict) else m.nat_pool
+            return (src, pool)
 
-        old_mappings = {make_key(m): m for m in (self.old.nat.mappings if self.old else [])}
-        new_mappings = {make_key(m): m for m in (self.new.nat.mappings if self.new else [])}
+        def to_dict(m):
+            if isinstance(m, dict):
+                return m
+            return asdict(m)
+
+        old_nat = _get_nat_config(self.old)
+        new_nat = _get_nat_config(self.new)
+
+        old_mappings = {make_key(m): m for m in old_nat.get('mappings', [])}
+        new_mappings = {make_key(m): m for m in new_nat.get('mappings', [])}
 
         for key, m in new_mappings.items():
             if key not in old_mappings:
+                src, pool = key
                 self.changes.append(ConfigChange(
                     change_type=ChangeType.ADD,
                     category="nat_mapping",
-                    identifier=f"{m.source_network}->{m.nat_pool}",
-                    new_value=asdict(m)
+                    identifier=f"{src}->{pool}",
+                    new_value=to_dict(m)
                 ))
 
         for key in old_mappings:
             if key not in new_mappings:
                 m = old_mappings[key]
+                src, pool = key
                 self.changes.append(ConfigChange(
                     change_type=ChangeType.DELETE,
                     category="nat_mapping",
-                    identifier=f"{m.source_network}->{m.nat_pool}",
-                    old_value=asdict(m)
+                    identifier=f"{src}->{pool}",
+                    old_value=to_dict(m)
                 ))
 
     def _diff_nat_bypass(self) -> None:
         """Compare NAT bypass (ACL) rules."""
         def make_key(b):
-            return (b.source, b.destination)
+            src = b.get('source') if isinstance(b, dict) else b.source
+            dst = b.get('destination') if isinstance(b, dict) else b.destination
+            return (src, dst)
 
-        old_bypasses = {make_key(b): b for b in (self.old.nat.bypass_pairs if self.old else [])}
-        new_bypasses = {make_key(b): b for b in (self.new.nat.bypass_pairs if self.new else [])}
+        def to_dict(b):
+            if isinstance(b, dict):
+                return b
+            return asdict(b)
+
+        old_nat = _get_nat_config(self.old)
+        new_nat = _get_nat_config(self.new)
+
+        old_bypasses = {make_key(b): b for b in old_nat.get('bypass_pairs', [])}
+        new_bypasses = {make_key(b): b for b in new_nat.get('bypass_pairs', [])}
 
         for key, b in new_bypasses.items():
             if key not in old_bypasses:
+                src, dst = key
                 self.changes.append(ConfigChange(
                     change_type=ChangeType.ADD,
                     category="nat_bypass",
-                    identifier=f"{b.source}->{b.destination}",
-                    new_value=asdict(b)
+                    identifier=f"{src}->{dst}",
+                    new_value=to_dict(b)
                 ))
 
         for key in old_bypasses:
             if key not in new_bypasses:
                 b = old_bypasses[key]
+                src, dst = key
                 self.changes.append(ConfigChange(
                     change_type=ChangeType.DELETE,
                     category="nat_bypass",
-                    identifier=f"{b.source}->{b.destination}",
-                    old_value=asdict(b)
+                    identifier=f"{src}->{dst}",
+                    old_value=to_dict(b)
                 ))
 
     def _diff_bgp_peers(self) -> None:

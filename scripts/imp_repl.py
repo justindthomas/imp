@@ -59,12 +59,355 @@ try:
         ensure_modules_dir,
         MODULE_DEFINITIONS_DIR,
         MODULE_EXAMPLES_DIR,
+        ModuleCommand,
+        ModuleCommandParam,
     )
     MODULE_LOADER_AVAILABLE = True
 except ImportError:
     MODULE_LOADER_AVAILABLE = False
     MODULE_DEFINITIONS_DIR = Path("/persistent/config/modules")
     MODULE_EXAMPLES_DIR = Path("/usr/share/imp/module-examples")
+    ModuleCommand = None
+    ModuleCommandParam = None
+
+
+def get_nat_config(config):
+    """Get NAT config from modules list, returns dict or None."""
+    if not config or not hasattr(config, 'modules') or not config.modules:
+        return None
+    for module in config.modules:
+        if module.get('name') == 'nat' and module.get('enabled', False):
+            return module.get('config', {})
+    return None
+
+
+def find_module(config, name: str):
+    """Find module dict by name in config.modules list."""
+    if not config or not hasattr(config, 'modules') or not config.modules:
+        return None
+    for module in config.modules:
+        if module.get('name') == name:
+            return module
+    return None
+
+
+def ensure_nat_module(config) -> dict:
+    """Ensure NAT module exists in config.modules, return module dict."""
+    if not hasattr(config, 'modules'):
+        config.modules = []
+
+    nat_module = find_module(config, 'nat')
+    if not nat_module:
+        nat_module = {
+            'name': 'nat',
+            'enabled': True,
+            'config': {
+                'bgp_prefix': '',
+                'mappings': [],
+                'bypass_pairs': []
+            }
+        }
+        config.modules.append(nat_module)
+    elif not nat_module.get('enabled'):
+        nat_module['enabled'] = True
+
+    # Ensure config dict exists
+    if 'config' not in nat_module:
+        nat_module['config'] = {'bgp_prefix': '', 'mappings': [], 'bypass_pairs': []}
+
+    return nat_module
+
+
+# =============================================================================
+# Generic Module Command Executor
+# =============================================================================
+
+def validate_param_value(value: str, param_type: str) -> tuple[bool, str]:
+    """Validate a parameter value against its type. Returns (valid, error_msg)."""
+    import ipaddress
+
+    if param_type == 'ipv4_cidr':
+        try:
+            ipaddress.IPv4Network(value, strict=False)
+            return True, ""
+        except (ipaddress.AddressValueError, ipaddress.NetmaskValueError, ValueError):
+            return False, "Invalid IPv4 CIDR (e.g., 10.0.0.0/24)"
+
+    elif param_type == 'ipv6_cidr':
+        try:
+            ipaddress.IPv6Network(value, strict=False)
+            return True, ""
+        except (ipaddress.AddressValueError, ipaddress.NetmaskValueError, ValueError):
+            return False, "Invalid IPv6 CIDR (e.g., 2001:db8::/32)"
+
+    elif param_type == 'ipv4':
+        try:
+            ipaddress.IPv4Address(value)
+            return True, ""
+        except ipaddress.AddressValueError:
+            return False, "Invalid IPv4 address"
+
+    elif param_type == 'ipv6':
+        try:
+            ipaddress.IPv6Address(value)
+            return True, ""
+        except ipaddress.AddressValueError:
+            return False, "Invalid IPv6 address"
+
+    elif param_type == 'integer':
+        try:
+            int(value)
+            return True, ""
+        except ValueError:
+            return False, "Must be an integer"
+
+    elif param_type == 'boolean':
+        if value.lower() in ('true', 'false', 'yes', 'no', '1', '0'):
+            return True, ""
+        return False, "Must be true/false or yes/no"
+
+    # string and other types - accept anything
+    return True, ""
+
+
+def convert_param_value(value: str, param_type: str):
+    """Convert string value to appropriate Python type."""
+    if param_type == 'integer':
+        return int(value)
+    elif param_type == 'boolean':
+        return value.lower() in ('true', 'yes', '1')
+    # All others remain strings
+    return value
+
+
+def execute_module_command(ctx, module_name: str, cmd: 'ModuleCommand') -> None:
+    """Execute a generic module command based on its action type."""
+    if not ctx.config:
+        print(f"{Colors.RED}[!] No configuration loaded{Colors.NC}")
+        return
+
+    # Find or create module config
+    module_dict = find_module(ctx.config, module_name)
+    if not module_dict:
+        # Module not in config yet - add it
+        module_dict = {
+            'name': module_name,
+            'enabled': True,
+            'config': {}
+        }
+        if not hasattr(ctx.config, 'modules'):
+            ctx.config.modules = []
+        ctx.config.modules.append(module_dict)
+
+    if not module_dict.get('enabled'):
+        module_dict['enabled'] = True
+
+    if 'config' not in module_dict:
+        module_dict['config'] = {}
+
+    mod_cfg = module_dict['config']
+
+    # Execute based on action type
+    if cmd.action == 'array_append':
+        _exec_array_append(ctx, mod_cfg, cmd)
+    elif cmd.action == 'array_remove':
+        _exec_array_remove(ctx, mod_cfg, cmd)
+    elif cmd.action == 'array_list':
+        _exec_array_list(mod_cfg, cmd)
+    elif cmd.action == 'set_value':
+        _exec_set_value(ctx, mod_cfg, cmd)
+    elif cmd.action == 'show':
+        _exec_show(module_dict, module_name)
+    else:
+        print(f"{Colors.RED}[!] Unknown action: {cmd.action}{Colors.NC}")
+
+
+def _exec_array_append(ctx, mod_cfg: dict, cmd: 'ModuleCommand') -> None:
+    """Execute array_append action - add item to array."""
+    # Ensure target array exists
+    if cmd.target not in mod_cfg:
+        mod_cfg[cmd.target] = []
+    target_array = mod_cfg[cmd.target]
+
+    print()
+    print(f"{Colors.BOLD}{cmd.description}{Colors.NC}")
+    print()
+
+    # Collect parameter values
+    item = {}
+    for param in cmd.params:
+        prompt_text = param.prompt or f"{param.name}"
+        while True:
+            value = input(f"  {prompt_text}: ").strip()
+            if not value:
+                if param.required:
+                    print(f"  {Colors.RED}Required field{Colors.NC}")
+                    continue
+                else:
+                    break
+
+            valid, err = validate_param_value(value, param.type)
+            if not valid:
+                print(f"  {Colors.RED}{err}{Colors.NC}")
+                continue
+
+            item[param.name] = convert_param_value(value, param.type)
+            break
+
+        if not value and not param.required:
+            continue
+
+    if not item:
+        print(f"{Colors.YELLOW}[!] Cancelled{Colors.NC}")
+        return
+
+    # Check for duplicate (use first param as key if no explicit key)
+    key_field = cmd.key or (cmd.params[0].name if cmd.params else None)
+    if key_field and key_field in item:
+        key_val = item[key_field]
+        if any(existing.get(key_field) == key_val for existing in target_array):
+            print(f"{Colors.RED}[!] Entry with {key_field}={key_val} already exists{Colors.NC}")
+            return
+
+    target_array.append(item)
+    ctx.dirty = True
+
+    # Format output
+    if cmd.format:
+        display = cmd.format.format(**item)
+    else:
+        display = str(item)
+    print(f"{Colors.GREEN}[+] Added: {display}{Colors.NC}")
+
+
+def _exec_array_remove(ctx, mod_cfg: dict, cmd: 'ModuleCommand') -> None:
+    """Execute array_remove action - remove item from array."""
+    if cmd.target not in mod_cfg or not mod_cfg[cmd.target]:
+        print(f"{Colors.YELLOW}[!] No items to delete{Colors.NC}")
+        return
+
+    target_array = mod_cfg[cmd.target]
+    key_field = cmd.key or 'name'
+
+    print()
+    print(f"Current {cmd.target}:")
+    for i, item in enumerate(target_array, 1):
+        if cmd.format:
+            try:
+                display = cmd.format.format(**item)
+            except KeyError:
+                display = str(item)
+        else:
+            display = str(item)
+        print(f"  {i}. {display}")
+    print()
+
+    choice = input("Delete which entry (number or press Enter to cancel): ").strip()
+    if not choice:
+        return
+
+    try:
+        idx = int(choice) - 1
+        if idx < 0 or idx >= len(target_array):
+            print(f"{Colors.RED}[!] Invalid selection{Colors.NC}")
+            return
+    except ValueError:
+        print(f"{Colors.RED}[!] Invalid number{Colors.NC}")
+        return
+
+    removed = target_array.pop(idx)
+    ctx.dirty = True
+
+    if cmd.format:
+        try:
+            display = cmd.format.format(**removed)
+        except KeyError:
+            display = str(removed)
+    else:
+        display = str(removed)
+    print(f"{Colors.GREEN}[+] Deleted: {display}{Colors.NC}")
+
+
+def _exec_array_list(mod_cfg: dict, cmd: 'ModuleCommand') -> None:
+    """Execute array_list action - display array contents."""
+    if cmd.target not in mod_cfg or not mod_cfg[cmd.target]:
+        print(f"  (none configured)")
+        return
+
+    target_array = mod_cfg[cmd.target]
+    for item in target_array:
+        if cmd.format:
+            try:
+                display = cmd.format.format(**item)
+            except KeyError:
+                display = str(item)
+        else:
+            display = str(item)
+        print(f"  {display}")
+
+
+def _exec_set_value(ctx, mod_cfg: dict, cmd: 'ModuleCommand') -> None:
+    """Execute set_value action - set a scalar config field."""
+    current = mod_cfg.get(cmd.target, '')
+    print()
+    if current:
+        print(f"  Current value: {current}")
+
+    if not cmd.params:
+        print(f"{Colors.RED}[!] No parameters defined for set_value{Colors.NC}")
+        return
+
+    param = cmd.params[0]
+    prompt_text = param.prompt or f"New value for {cmd.target}"
+
+    while True:
+        value = input(f"  {prompt_text}: ").strip()
+        if not value:
+            print(f"{Colors.YELLOW}[!] Cancelled{Colors.NC}")
+            return
+
+        valid, err = validate_param_value(value, param.type)
+        if not valid:
+            print(f"  {Colors.RED}{err}{Colors.NC}")
+            continue
+
+        mod_cfg[cmd.target] = convert_param_value(value, param.type)
+        ctx.dirty = True
+        print(f"{Colors.GREEN}[+] Set {cmd.target} = {value}{Colors.NC}")
+        break
+
+
+def _exec_show(module_dict: dict, module_name: str) -> None:
+    """Execute show action - display module configuration."""
+    print()
+    print(f"{Colors.BOLD}Module: {module_name}{Colors.NC}")
+    print(f"  Enabled: {module_dict.get('enabled', False)}")
+    print()
+
+    config = module_dict.get('config', {})
+    if not config:
+        print("  (no configuration)")
+        return
+
+    for key, value in config.items():
+        if isinstance(value, list):
+            print(f"  {key}: ({len(value)} items)")
+            for item in value:
+                print(f"    - {item}")
+        else:
+            print(f"  {key}: {value}")
+
+
+def get_module_commands(module_name: str) -> list:
+    """Load CLI commands for a module from its definition."""
+    if not MODULE_LOADER_AVAILABLE:
+        return []
+
+    try:
+        module_def = load_module_definition(module_name)
+        return module_def.cli_commands
+    except Exception:
+        return []
 
 
 # =============================================================================
@@ -476,8 +819,12 @@ def cmd_show(ctx: MenuContext, args: list[str]) -> None:
         else:
             print(f"  BGP:         Disabled")
 
-        print(f"  NAT prefix:  {config.nat.bgp_prefix}")
-        print(f"  NAT mappings: {len(config.nat.mappings)}")
+        nat_cfg = get_nat_config(config)
+        if nat_cfg:
+            print(f"  NAT prefix:  {nat_cfg.get('bgp_prefix', 'not set')}")
+            print(f"  NAT mappings: {len(nat_cfg.get('mappings', []))}")
+        else:
+            print(f"  NAT:         Not configured (use 'config modules enable nat')")
         print(f"  Loopbacks:   {len(config.loopbacks)}")
         print(f"  BVI domains: {len(config.bvi_domains)}")
         print(f"  VLAN pass:   {len(config.vlan_passthrough)}")
@@ -1224,9 +1571,14 @@ def _show_nat(config) -> None:
     """Show NAT configuration."""
     print(f"{Colors.BOLD}NAT Configuration{Colors.NC}")
     print("=" * 50)
-    print(f"  Pool prefix: {config.nat.bgp_prefix}")
-    print(f"  Mappings:    {len(config.nat.mappings)}")
-    print(f"  Bypass rules: {len(config.nat.bypass_pairs)}")
+    nat_cfg = get_nat_config(config)
+    if nat_cfg:
+        print(f"  Pool prefix: {nat_cfg.get('bgp_prefix', 'not set')}")
+        print(f"  Mappings:    {len(nat_cfg.get('mappings', []))}")
+        print(f"  Bypass rules: {len(nat_cfg.get('bypass_pairs', []))}")
+    else:
+        print("  NAT module not configured")
+        print("  Use 'config modules enable nat' to enable")
     print()
 
 
@@ -1234,11 +1586,15 @@ def _show_nat_mappings(config) -> None:
     """Show NAT mappings."""
     print(f"{Colors.BOLD}NAT Mappings{Colors.NC}")
     print("=" * 50)
-    if not config.nat.mappings:
+    nat_cfg = get_nat_config(config)
+    mappings = nat_cfg.get('mappings', []) if nat_cfg else []
+    if not mappings:
         print("  (none configured)")
     else:
-        for m in config.nat.mappings:
-            print(f"  {m.source_network} -> {m.nat_pool}")
+        for m in mappings:
+            src = m.get('source_network', m.source_network if hasattr(m, 'source_network') else '?')
+            pool = m.get('nat_pool', m.nat_pool if hasattr(m, 'nat_pool') else '?')
+            print(f"  {src} -> {pool}")
     print()
 
 
@@ -1246,11 +1602,15 @@ def _show_nat_bypass(config) -> None:
     """Show NAT bypass rules."""
     print(f"{Colors.BOLD}NAT Bypass Rules{Colors.NC}")
     print("=" * 50)
-    if not config.nat.bypass_pairs:
+    nat_cfg = get_nat_config(config)
+    bypass_pairs = nat_cfg.get('bypass_pairs', []) if nat_cfg else []
+    if not bypass_pairs:
         print("  (none configured)")
     else:
-        for bp in config.nat.bypass_pairs:
-            print(f"  {bp.source} -> {bp.destination}")
+        for bp in bypass_pairs:
+            src = bp.get('source', bp.source if hasattr(bp, 'source') else '?')
+            dst = bp.get('destination', bp.destination if hasattr(bp, 'destination') else '?')
+            print(f"  {src} -> {dst}")
     print()
 
 
@@ -2106,29 +2466,35 @@ def cmd_nat_mapping_add(ctx: MenuContext, args: list[str]) -> None:
     print("  Maps internal network to a public NAT pool")
     print()
 
+    # Ensure NAT module exists
+    nat_module = ensure_nat_module(ctx.config)
+    nat_cfg = nat_module['config']
+    if 'mappings' not in nat_cfg:
+        nat_cfg['mappings'] = []
+
     # Source network
     source = prompt_value("Source network (CIDR, e.g., 10.0.0.0/24)", validate_ipv4_cidr)
     if not source:
         return
 
     # Check for duplicate
-    if any(m.source_network == source for m in ctx.config.nat.mappings):
+    if any(m.get('source_network') == source for m in nat_cfg['mappings']):
         error(f"Mapping for {source} already exists")
         return
 
     # NAT pool
     print()
-    print(f"  Current NAT prefix: {ctx.config.nat.bgp_prefix}")
+    print(f"  Current NAT prefix: {nat_cfg.get('bgp_prefix', 'not set')}")
     print()
     nat_pool = prompt_value("NAT pool (CIDR for det44, e.g., 23.177.24.96/29)", validate_ipv4_cidr)
     if not nat_pool:
         return
 
-    # Add to config
-    ctx.config.nat.mappings.append(NATMapping(
-        source_network=source,
-        nat_pool=nat_pool
-    ))
+    # Add to config as dict
+    nat_cfg['mappings'].append({
+        'source_network': source,
+        'nat_pool': nat_pool
+    })
 
     ctx.dirty = True
     log(f"Added NAT mapping: {source} -> {nat_pool}")
@@ -2140,38 +2506,45 @@ def cmd_nat_mapping_delete(ctx: MenuContext, args: list[str]) -> None:
         error("No configuration loaded")
         return
 
+    nat_cfg = get_nat_config(ctx.config)
+    if not nat_cfg:
+        error("NAT module not configured")
+        return
+
+    mappings = nat_cfg.get('mappings', [])
+    if not mappings:
+        error("No NAT mappings configured")
+        return
+
     if not args:
         # List and ask for selection
-        if not ctx.config.nat.mappings:
-            error("No NAT mappings configured")
-            return
         print()
         print("Current mappings:")
-        for i, m in enumerate(ctx.config.nat.mappings, 1):
-            print(f"  {i}. {m.source_network} -> {m.nat_pool}")
+        for i, m in enumerate(mappings, 1):
+            print(f"  {i}. {m.get('source_network')} -> {m.get('nat_pool')}")
         print()
         choice = prompt_value("Delete which mapping (number)")
         if not choice:
             return
         try:
             idx = int(choice) - 1
-            if idx < 0 or idx >= len(ctx.config.nat.mappings):
+            if idx < 0 or idx >= len(mappings):
                 raise ValueError()
         except ValueError:
             error("Invalid selection")
             return
-        mapping = ctx.config.nat.mappings[idx]
+        mapping = mappings[idx]
     else:
         source = args[0]
-        mapping = next((m for m in ctx.config.nat.mappings if m.source_network == source), None)
+        mapping = next((m for m in mappings if m.get('source_network') == source), None)
         if not mapping:
             error(f"NAT mapping for {source} not found")
             return
 
-    if prompt_yes_no(f"Delete mapping {mapping.source_network} -> {mapping.nat_pool}?"):
-        ctx.config.nat.mappings.remove(mapping)
+    if prompt_yes_no(f"Delete mapping {mapping.get('source_network')} -> {mapping.get('nat_pool')}?"):
+        mappings.remove(mapping)
         ctx.dirty = True
-        log(f"Deleted NAT mapping: {mapping.source_network}")
+        log(f"Deleted NAT mapping: {mapping.get('source_network')}")
 
 
 # =============================================================================
@@ -2190,6 +2563,12 @@ def cmd_nat_bypass_add(ctx: MenuContext, args: list[str]) -> None:
     print("  Traffic matching these source/destination pairs bypasses NAT")
     print()
 
+    # Ensure NAT module exists
+    nat_module = ensure_nat_module(ctx.config)
+    nat_cfg = nat_module['config']
+    if 'bypass_pairs' not in nat_cfg:
+        nat_cfg['bypass_pairs'] = []
+
     # Source network
     source = prompt_value("Source network (CIDR)", validate_ipv4_cidr)
     if not source:
@@ -2201,15 +2580,15 @@ def cmd_nat_bypass_add(ctx: MenuContext, args: list[str]) -> None:
         return
 
     # Check for duplicate
-    if any(b.source == source and b.destination == dest for b in ctx.config.nat.bypass_pairs):
+    if any(b.get('source') == source and b.get('destination') == dest for b in nat_cfg['bypass_pairs']):
         error(f"Bypass rule {source} -> {dest} already exists")
         return
 
-    # Add to config
-    ctx.config.nat.bypass_pairs.append(ACLBypassPair(
-        source=source,
-        destination=dest
-    ))
+    # Add to config as dict
+    nat_cfg['bypass_pairs'].append({
+        'source': source,
+        'destination': dest
+    })
 
     ctx.dirty = True
     log(f"Added NAT bypass: {source} -> {dest}")
@@ -2221,7 +2600,13 @@ def cmd_nat_bypass_delete(ctx: MenuContext, args: list[str]) -> None:
         error("No configuration loaded")
         return
 
-    if not ctx.config.nat.bypass_pairs:
+    nat_cfg = get_nat_config(ctx.config)
+    if not nat_cfg:
+        error("NAT module not configured")
+        return
+
+    bypass_pairs = nat_cfg.get('bypass_pairs', [])
+    if not bypass_pairs:
         error("No bypass rules configured")
         return
 
@@ -2229,32 +2614,32 @@ def cmd_nat_bypass_delete(ctx: MenuContext, args: list[str]) -> None:
         # List and ask for selection
         print()
         print("Current bypass rules:")
-        for i, b in enumerate(ctx.config.nat.bypass_pairs, 1):
-            print(f"  {i}. {b.source} -> {b.destination}")
+        for i, b in enumerate(bypass_pairs, 1):
+            print(f"  {i}. {b.get('source')} -> {b.get('destination')}")
         print()
         choice = prompt_value("Delete which rule (number)")
         if not choice:
             return
         try:
             idx = int(choice) - 1
-            if idx < 0 or idx >= len(ctx.config.nat.bypass_pairs):
+            if idx < 0 or idx >= len(bypass_pairs):
                 raise ValueError()
         except ValueError:
             error("Invalid selection")
             return
-        bypass = ctx.config.nat.bypass_pairs[idx]
+        bypass = bypass_pairs[idx]
     else:
         # Try to parse source from args
         source = args[0]
-        bypass = next((b for b in ctx.config.nat.bypass_pairs if b.source == source), None)
+        bypass = next((b for b in bypass_pairs if b.get('source') == source), None)
         if not bypass:
             error(f"Bypass rule for source {source} not found")
             return
 
-    if prompt_yes_no(f"Delete bypass {bypass.source} -> {bypass.destination}?"):
-        ctx.config.nat.bypass_pairs.remove(bypass)
+    if prompt_yes_no(f"Delete bypass {bypass.get('source')} -> {bypass.get('destination')}?"):
+        bypass_pairs.remove(bypass)
         ctx.dirty = True
-        log(f"Deleted NAT bypass: {bypass.source} -> {bypass.destination}")
+        log(f"Deleted NAT bypass: {bypass.get('source')} -> {bypass.get('destination')}")
 
 
 def cmd_nat_set_prefix(ctx: MenuContext, args: list[str]) -> None:
@@ -2263,8 +2648,12 @@ def cmd_nat_set_prefix(ctx: MenuContext, args: list[str]) -> None:
         error("No configuration loaded")
         return
 
+    # Ensure NAT module exists
+    nat_module = ensure_nat_module(ctx.config)
+    nat_cfg = nat_module['config']
+
     print()
-    print(f"  Current NAT prefix: {ctx.config.nat.bgp_prefix}")
+    print(f"  Current NAT prefix: {nat_cfg.get('bgp_prefix', 'not set')}")
     if ctx.config.bgp.enabled:
         print("  (This prefix will be announced via BGP)")
     print()
@@ -2273,7 +2662,7 @@ def cmd_nat_set_prefix(ctx: MenuContext, args: list[str]) -> None:
     if not prefix:
         return
 
-    ctx.config.nat.bgp_prefix = prefix
+    nat_cfg['bgp_prefix'] = prefix
     ctx.dirty = True
     log(f"Set NAT prefix to: {prefix}")
 
@@ -4117,7 +4506,34 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_modules_disable(ctx, args[1:])
             return True
 
-    # NAT commands (under config)
+    # Generic module commands - check if first path element is a module name
+    if config_path and MODULE_LOADER_AVAILABLE:
+        module_name = config_path[0]
+        # Try to load module commands
+        module_cmds = get_module_commands(module_name)
+        if module_cmds:
+            # Build command path from remaining path elements + command
+            # e.g., config_path=["nat", "mappings"], command="add" -> "mappings/add"
+            # e.g., config_path=["nat"], command="set-prefix" -> "set-prefix"
+            path_parts = config_path[1:] + [command]
+            cmd_path = "/".join(path_parts)
+
+            # Find matching command
+            for mod_cmd in module_cmds:
+                if mod_cmd.path == cmd_path:
+                    execute_module_command(ctx, module_name, mod_cmd)
+                    return True
+
+            # Also try without command if command is a subpath
+            # e.g., "mappings" command with "add" arg -> try "mappings/add"
+            if args:
+                cmd_path_with_arg = "/".join(config_path[1:] + [command, args[0]])
+                for mod_cmd in module_cmds:
+                    if mod_cmd.path == cmd_path_with_arg:
+                        execute_module_command(ctx, module_name, mod_cmd)
+                        return True
+
+    # Legacy NAT commands (kept for backwards compatibility, will use generic above first)
     if config_path == ["nat"]:
         if command == "set-prefix":
             cmd_nat_set_prefix(ctx, args)
