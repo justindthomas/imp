@@ -18,14 +18,15 @@ set interface mtu 1500 external
 {% for sub in external.subinterfaces %}
 create sub-interfaces external {{ sub.vlan_id }}
 set interface state external.{{ sub.vlan_id }} up
+{% if sub.create_lcp %}
+{# Create LCP BEFORE IPs so linux_cp syncs addresses to Linux #}
+lcp create external.{{ sub.vlan_id }} host-if ext-v{{ sub.vlan_id }}
+{% endif %}
 {% if sub.ipv4 %}
 set interface ip address external.{{ sub.vlan_id }} {{ sub.ipv4 }}/{{ sub.ipv4_prefix }}
 {% endif %}
 {% if sub.ipv6 %}
 set interface ip address external.{{ sub.vlan_id }} {{ sub.ipv6 }}/{{ sub.ipv6_prefix }}
-{% endif %}
-{% if sub.create_lcp %}
-lcp create external.{{ sub.vlan_id }} host-if ext-v{{ sub.vlan_id }}
 {% endif %}
 {% endfor %}
 {% endif %}
@@ -45,14 +46,15 @@ set interface mtu 1500 {{ iface.vpp_name }}
 {% for sub in iface.subinterfaces %}
 create sub-interfaces {{ iface.vpp_name }} {{ sub.vlan_id }}
 set interface state {{ iface.vpp_name }}.{{ sub.vlan_id }} up
+{% if sub.create_lcp %}
+{# Create LCP BEFORE IPs so linux_cp syncs addresses to Linux #}
+lcp create {{ iface.vpp_name }}.{{ sub.vlan_id }} host-if {{ iface.vpp_name }}-v{{ sub.vlan_id }}
+{% endif %}
 {% if sub.ipv4 %}
 set interface ip address {{ iface.vpp_name }}.{{ sub.vlan_id }} {{ sub.ipv4 }}/{{ sub.ipv4_prefix }}
 {% endif %}
 {% if sub.ipv6 %}
 set interface ip address {{ iface.vpp_name }}.{{ sub.vlan_id }} {{ sub.ipv6 }}/{{ sub.ipv6_prefix }}
-{% endif %}
-{% if sub.create_lcp %}
-lcp create {{ iface.vpp_name }}.{{ sub.vlan_id }} host-if {{ iface.vpp_name }}-v{{ sub.vlan_id }}
 {% endif %}
 {% endfor %}
 {% endif %}
@@ -63,14 +65,15 @@ lcp create {{ iface.vpp_name }}.{{ sub.vlan_id }} host-if {{ iface.vpp_name }}-v
 {% for lo in loopbacks %}
 create loopback interface instance {{ lo.instance }}
 set interface state loop{{ lo.instance }} up
+{% if lo.create_lcp %}
+{# Create LCP BEFORE IPs so linux_cp syncs addresses to Linux #}
+lcp create loop{{ lo.instance }} host-if lo{{ lo.instance }}
+{% endif %}
 {% if lo.ipv4 %}
 set interface ip address loop{{ lo.instance }} {{ lo.ipv4 }}/{{ lo.ipv4_prefix }}
 {% endif %}
 {% if lo.ipv6 %}
 set interface ip address loop{{ lo.instance }} {{ lo.ipv6 }}/{{ lo.ipv6_prefix }}
-{% endif %}
-{% if lo.create_lcp %}
-lcp create loop{{ lo.instance }} host-if lo{{ lo.instance }}
 {% endif %}
 {% endfor %}
 {% endif %}
@@ -92,14 +95,15 @@ set interface l2 bridge {{ member.interface }}.{{ member.vlan_id }} {{ bvi.bridg
 set interface l2 bridge {{ member.interface }} {{ bvi.bridge_id }}
 {% endif %}
 {% endfor %}
+{% if bvi.create_lcp %}
+{# Create LCP BEFORE IPs so linux_cp syncs addresses to Linux #}
+lcp create loop{{ bvi.bridge_id }} host-if bvi{{ bvi.bridge_id }}
+{% endif %}
 {% if bvi.ipv4 %}
 set interface ip address loop{{ bvi.bridge_id }} {{ bvi.ipv4 }}/{{ bvi.ipv4_prefix }}
 {% endif %}
 {% if bvi.ipv6 %}
 set interface ip address loop{{ bvi.bridge_id }} {{ bvi.ipv6 }}/{{ bvi.ipv6_prefix }}
-{% endif %}
-{% if bvi.create_lcp %}
-lcp create loop{{ bvi.bridge_id }} host-if bvi{{ bvi.bridge_id }}
 {% endif %}
 {% endfor %}
 {% endif %}

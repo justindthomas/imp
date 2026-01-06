@@ -6,8 +6,10 @@ This module provides a hierarchical menu-driven interface for managing
 router configuration. Changes are staged until explicitly applied.
 """
 
+import ipaddress
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field, asdict
@@ -167,6 +169,18 @@ class MenuCompleter(Completer):
         # Build effective path: current menu path + typed command prefix
         effective_path = self.ctx.path + cmd_prefix
 
+        # Handle "show" command completions (it's a global command, not a menu)
+        if not self.ctx.path or self.ctx.path[0] != "config":
+            # At root or non-config menu - show is for live state
+            if cmd_prefix == ["show"]:
+                return ["interfaces", "ip", "ipv6", "neighbors", "sessions", "bgp", "ospf", "config"]
+            if cmd_prefix == ["show", "ip"]:
+                return ["route", "fib"]
+            if cmd_prefix == ["show", "ipv6"]:
+                return ["route", "fib"]
+            if cmd_prefix == ["show", "config"]:
+                return ["interfaces", "loopbacks", "bvi", "vlan-passthrough", "routing", "nat", "containers", "cpu"]
+
         # Navigate to the menu at this effective path
         menu = self._get_menu_at_path(effective_path)
 
@@ -176,7 +190,24 @@ class MenuCompleter(Completer):
 
         # Only show global commands at the current menu level (not when completing subcommands)
         if not cmd_prefix:
-            completions.extend(["help", "back", "home", "show", "status", "apply", "save", "reload", "exit"])
+            # Commands available everywhere
+            base_commands = ["help", "exit"]
+
+            # Navigation commands only when not at root
+            if self.ctx.path:
+                base_commands.extend(["back", "home"])
+
+            # Root-only commands
+            if not self.ctx.path:
+                base_commands.extend(["show", "status", "reload"])
+                # Apply only when there are unsaved changes
+                if self.ctx.dirty:
+                    base_commands.append("apply")
+            # At config level, show is for viewing config sections
+            elif self.ctx.path == ["config"]:
+                base_commands.append("show")
+
+            completions.extend(base_commands)
 
         if menu:
             # Menu-specific commands from static menu definition
@@ -188,45 +219,50 @@ class MenuCompleter(Completer):
                 completions.extend(menu["children"].keys())
 
         # Dynamic completions based on effective path
-        if effective_path == ["interfaces", "internal"] and self.ctx.config:
+        if effective_path == ["config", "interfaces", "internal"] and self.ctx.config:
             # Add internal interface names
             completions.extend(i.vpp_name for i in self.ctx.config.internal)
 
-        if len(effective_path) == 3 and effective_path[:2] == ["interfaces", "internal"]:
+        if len(effective_path) == 4 and effective_path[:3] == ["config", "interfaces", "internal"]:
             # Add subinterfaces submenu and OSPF commands for internal interfaces
             completions.append("subinterfaces")
             completions.extend(["show", "ospf", "ospf6"])
 
-        if effective_path == ["interfaces", "external"]:
+        if effective_path == ["config", "interfaces", "external"]:
             # Add OSPF commands for external interface
             completions.extend(["ospf", "ospf6"])
 
-        if len(effective_path) >= 3 and effective_path[-1] == "subinterfaces":
+        if len(effective_path) >= 4 and effective_path[-1] == "subinterfaces":
             # Add sub-interface commands
             completions.extend(["list", "add", "delete"])
 
-        if effective_path == ["loopbacks"] and self.ctx.config:
-            # Add loopback instance numbers for delete/ospf completion
-            for lo in self.ctx.config.loopbacks:
-                completions.append(str(lo.instance))
+        if len(effective_path) == 3 and effective_path[:2] == ["config", "loopbacks"]:
+            # After "delete" or "edit", show loopback instance numbers
+            if effective_path[2] in ("delete", "edit") and self.ctx.config:
+                for lo in self.ctx.config.loopbacks:
+                    completions.append(str(lo.instance))
 
-        if len(effective_path) == 2 and effective_path[0] == "loopbacks":
-            # Add OSPF commands for specific loopback
-            completions.extend(["ospf", "ospf6"])
+        if len(effective_path) == 4 and effective_path[:2] == ["config", "loopbacks"]:
+            # After selecting a loopback instance, show OSPF commands
+            if effective_path[2] not in ("delete", "edit", "add"):
+                completions.extend(["ospf", "ospf6"])
 
-        if effective_path == ["bvi"] and self.ctx.config:
-            # Add BVI bridge IDs for delete/ospf completion
-            for bvi in self.ctx.config.bvi_domains:
-                completions.append(str(bvi.bridge_id))
+        if len(effective_path) == 3 and effective_path[:2] == ["config", "bvi"]:
+            # After "delete" or "edit", show BVI bridge IDs
+            if effective_path[2] in ("delete", "edit") and self.ctx.config:
+                for bvi in self.ctx.config.bvi_domains:
+                    completions.append(str(bvi.bridge_id))
 
-        if len(effective_path) == 2 and effective_path[0] == "bvi":
-            # Add OSPF commands for specific BVI
-            completions.extend(["ospf", "ospf6"])
+        if len(effective_path) == 4 and effective_path[:2] == ["config", "bvi"]:
+            # After selecting a BVI, show OSPF commands
+            if effective_path[2] not in ("delete", "edit", "add"):
+                completions.extend(["ospf", "ospf6"])
 
-        if effective_path == ["vlan-passthrough"] and self.ctx.config:
-            # Add VLAN IDs for delete completion
-            for v in self.ctx.config.vlan_passthrough:
-                completions.append(str(v.vlan_id))
+        if len(effective_path) == 3 and effective_path[:2] == ["config", "vlan-passthrough"]:
+            # After "delete", show VLAN IDs
+            if effective_path[2] == "delete" and self.ctx.config:
+                for v in self.ctx.config.vlan_passthrough:
+                    completions.append(str(v.vlan_id))
 
         return list(set(completions))  # Remove duplicates
 
@@ -240,57 +276,64 @@ def build_menu_tree() -> dict:
     return {
         "root": {
             "children": {
-                "interfaces": {
+                # Configuration submenu - all config items moved here
+                "config": {
                     "children": {
-                        "management": {"commands": ["show", "set-dhcp", "set-static"]},
-                        "external": {
+                        "interfaces": {
                             "children": {
-                                "subinterfaces": {"commands": ["list", "add", "edit", "delete"]},
+                                "management": {"commands": ["show", "set-dhcp", "set-static"]},
+                                "external": {
+                                    "children": {
+                                        "subinterfaces": {"commands": ["list", "add", "edit", "delete"]},
+                                    },
+                                    "commands": ["show", "set"],
+                                },
+                                "internal": {
+                                    "commands": ["list"],
+                                    "dynamic": True,  # Children are generated from config
+                                },
                             },
+                            "commands": ["show"],
+                        },
+                        "loopbacks": {
+                            "commands": ["list", "add", "edit", "delete"],
+                        },
+                        "bvi": {
+                            "commands": ["list", "add", "edit", "delete"],
+                        },
+                        "vlan-passthrough": {
+                            "commands": ["list", "add", "delete"],
+                        },
+                        "routing": {
+                            "children": {
+                                "bgp": {
+                                    "commands": ["show", "enable", "disable"],
+                                    "children": {
+                                        "peers": {"commands": ["list", "add", "remove"]},
+                                    },
+                                },
+                                "ospf": {"commands": ["show", "enable", "disable", "set"]},
+                                "ospf6": {"commands": ["show", "enable", "disable", "set"]},
+                            },
+                            "commands": ["show"],
+                        },
+                        "nat": {
+                            "children": {
+                                "mappings": {"commands": ["list", "add", "delete"]},
+                                "bypass": {"commands": ["list", "add", "delete"]},
+                            },
+                            "commands": ["show", "set-prefix"],
+                        },
+                        "containers": {
                             "commands": ["show", "set"],
                         },
-                        "internal": {
-                            "commands": ["list"],
-                            "dynamic": True,  # Children are generated from config
+                        "cpu": {
+                            "commands": ["show"],
                         },
                     },
                     "commands": ["show"],
                 },
-                "loopbacks": {
-                    "commands": ["list", "add", "edit", "delete"],
-                },
-                "bvi": {
-                    "commands": ["list", "add", "edit", "delete"],
-                },
-                "vlan-passthrough": {
-                    "commands": ["list", "add", "delete"],
-                },
-                "routing": {
-                    "children": {
-                        "bgp": {
-                            "commands": ["show", "enable", "disable"],
-                            "children": {
-                                "peers": {"commands": ["list", "add", "remove"]},
-                            },
-                        },
-                        "ospf": {"commands": ["show", "enable", "disable", "set"]},
-                        "ospf6": {"commands": ["show", "enable", "disable", "set"]},
-                    },
-                    "commands": ["show"],
-                },
-                "nat": {
-                    "children": {
-                        "mappings": {"commands": ["list", "add", "delete"]},
-                        "bypass": {"commands": ["list", "add", "delete"]},
-                    },
-                    "commands": ["show", "set-prefix"],
-                },
-                "containers": {
-                    "commands": ["show", "set"],
-                },
-                "cpu": {
-                    "commands": ["show"],
-                },
+                # Operational commands remain at root
                 "shell": {
                     "children": {
                         "routing": {"commands": []},
@@ -327,19 +370,25 @@ def cmd_help(ctx: MenuContext, args: list[str], menus: dict) -> None:
     print(f"{Colors.BOLD}Available Commands:{Colors.NC}")
     print()
 
-    # Global commands
+    # Navigation commands
     print(f"  {Colors.CYAN}Navigation:{Colors.NC}")
     print("    help, ?         Show this help")
-    print("    back, ..        Go up one level")
-    print("    home, /         Return to root menu")
+    if ctx.path:  # Only show when not at root
+        print("    back, ..        Go up one level")
+        print("    home, /         Return to root menu")
     print("    exit, quit      Exit the REPL")
     print()
 
-    print(f"  {Colors.CYAN}Configuration:{Colors.NC}")
-    print("    show            Display configuration at current level")
+    # Operational commands
+    print(f"  {Colors.CYAN}Operations:{Colors.NC}")
+    if not ctx.path or ctx.path[0] != "config":
+        print("    show            Display live state (show interfaces, routes, bgp, etc.)")
+        print("    show config     Display staged configuration")
+    else:
+        print("    show            Display configuration at current level")
     print("    status          Show staged vs applied status")
-    print("    save            Save configuration to JSON")
-    print("    apply           Save and regenerate config files")
+    if ctx.dirty:
+        print("    apply           Save and regenerate config files")
     print("    reload          Reload from JSON (discard changes)")
     print("    agent           Enter LLM-powered agent mode (Ollama)")
     print()
@@ -374,7 +423,8 @@ def cmd_show(ctx: MenuContext, args: list[str]) -> None:
         return
 
     config = ctx.config
-    path = ctx.path
+    # Strip "config" prefix for path matching (allows same logic for config menu)
+    path = ctx.path[1:] if ctx.path and ctx.path[0] == "config" else ctx.path
 
     print()
 
@@ -478,6 +528,327 @@ def cmd_show(ctx: MenuContext, args: list[str]) -> None:
 
     else:
         warn(f"No show handler for path: {'.'.join(path)}")
+
+
+def cmd_show_live(ctx: MenuContext, args: list[str]) -> None:
+    """Show live operational state from VPP/FRR."""
+    if not args:
+        # Show available categories
+        print()
+        print(f"{Colors.BOLD}Live State Categories:{Colors.NC}")
+        print("  interfaces          - VPP interface state and counters")
+        print("  ip route [prefix]   - IPv4 routing table (FRR)")
+        print("  ipv6 route [prefix] - IPv6 routing table (FRR)")
+        print("  ip fib [prefix]     - IPv4 forwarding table (VPP)")
+        print("  ipv6 fib [prefix]   - IPv6 forwarding table (VPP)")
+        print("  neighbors           - ARP/NDP neighbor table")
+        print("  sessions            - NAT session table")
+        print("  bgp                 - BGP neighbor status")
+        print("  ospf                - OSPF neighbor status")
+        print()
+        print("Prefix filter shows routes within the given prefix, e.g.:")
+        print("  show ip route 10.0.0.0/8")
+        print()
+        print("Use 'show config' to view staged configuration")
+        return
+
+    target = args[0].lower()
+
+    if target == "config":
+        # Delegate to config show
+        if len(args) > 1:
+            # Build path from remaining args for config show
+            temp_ctx = MenuContext(config=ctx.config, path=["config"] + args[1:])
+            cmd_show(temp_ctx, [])
+        else:
+            temp_ctx = MenuContext(config=ctx.config, path=[])
+            cmd_show(temp_ctx, [])
+        return
+
+    if target == "interfaces":
+        _show_live_interfaces()
+    elif target == "ip" and len(args) > 1:
+        subtarget = args[1].lower()
+        prefix_filter = args[2] if len(args) > 2 else None
+        if subtarget == "route":
+            _show_live_route("ip", prefix_filter)
+        elif subtarget == "fib":
+            _show_live_fib("ip", prefix_filter)
+        else:
+            warn(f"Unknown: show ip {subtarget}")
+            print("Use: show ip route [prefix], show ip fib [prefix]")
+    elif target == "ipv6" and len(args) > 1:
+        subtarget = args[1].lower()
+        prefix_filter = args[2] if len(args) > 2 else None
+        if subtarget == "route":
+            _show_live_route("ipv6", prefix_filter)
+        elif subtarget == "fib":
+            _show_live_fib("ipv6", prefix_filter)
+        else:
+            warn(f"Unknown: show ipv6 {subtarget}")
+            print("Use: show ipv6 route [prefix], show ipv6 fib [prefix]")
+    elif target in ("ip", "ipv6"):
+        warn(f"Incomplete command: show {target}")
+        print(f"Use: show {target} route [prefix], show {target} fib [prefix]")
+    elif target == "neighbors":
+        _show_live_neighbors()
+    elif target == "sessions":
+        _show_live_nat_sessions()
+    elif target == "bgp":
+        _show_live_bgp()
+    elif target == "ospf":
+        _show_live_ospf()
+    else:
+        warn(f"Unknown show target: {target}")
+        print("Use 'show' for available options")
+
+
+def _show_live_interfaces() -> None:
+    """Show live VPP interface state."""
+    print()
+    print(f"{Colors.BOLD}VPP Interfaces (Live){Colors.NC}")
+    print("=" * 70)
+
+    success, output = vpp_exec("show interface", "core")
+    if success:
+        print(output)
+    else:
+        error(f"Failed to get interfaces: {output}")
+    print()
+
+
+def _pager(content: str, title: str = "") -> None:
+    """Display content with paging if it exceeds terminal height."""
+    import shutil
+    import pydoc
+
+    # Get terminal size
+    term_size = shutil.get_terminal_size((80, 24))
+    lines = content.split('\n')
+
+    # If content fits in terminal, just print it
+    if len(lines) <= term_size.lines - 5:  # Leave room for prompt
+        if title:
+            print()
+            print(f"{Colors.BOLD}{title}{Colors.NC}")
+            print("=" * 70)
+        print(content)
+        print()
+    else:
+        # Use pager for long output
+        full_content = f"{title}\n{'=' * 70}\n{content}" if title else content
+        pydoc.pager(full_content)
+
+
+def _show_live_route(af: str, prefix: str = None) -> None:
+    """Show routing table from FRR.
+
+    Args:
+        af: Address family ("ip" or "ipv6")
+        prefix: Optional prefix filter (e.g., "192.168.0.0/16" shows all longer prefixes)
+    """
+    if af == "ip":
+        if prefix:
+            cmd = f"show ip route {prefix} longer-prefixes"
+        else:
+            cmd = "show ip route"
+        af_name = "IPv4"
+    else:
+        if prefix:
+            cmd = f"show ipv6 route {prefix} longer-prefixes"
+        else:
+            cmd = "show ipv6 route"
+        af_name = "IPv6"
+
+    result = subprocess.run(
+        ["ip", "netns", "exec", "dataplane", "vtysh", "-c", cmd],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        title = f"{af_name} Routing Table (FRR)"
+        if prefix:
+            title += f" - filter: {prefix}"
+        _pager(result.stdout, title)
+    else:
+        error(f"Failed to get {af_name} routes (FRR may not be running)")
+
+
+def _filter_fib_output(output: str, filter_prefix: str, is_ipv6: bool = False) -> str:
+    """Filter VPP FIB output to entries within a given prefix.
+
+    VPP's native 'show ip fib <prefix>' performs a longest-match lookup,
+    returning the covering route. This function instead filters to show
+    all entries that fall within the specified prefix (like FRR's
+    'longer-prefixes' option).
+
+    Args:
+        output: Raw VPP FIB output
+        filter_prefix: Prefix to filter by (e.g., "10.0.0.0/8")
+        is_ipv6: True for IPv6, False for IPv4
+
+    Returns:
+        Filtered FIB output containing only matching entries
+    """
+    try:
+        filter_net = ipaddress.ip_network(filter_prefix, strict=False)
+    except ValueError:
+        return output  # Invalid filter, return unfiltered
+
+    # Regex to match FIB entry prefixes at start of line
+    # IPv4: 10.0.0.0/8, 192.168.1.0/24, etc.
+    # IPv6: 2001:db8::/32, ::1/128, etc.
+    # The prefix may be alone on the line or followed by whitespace
+    if is_ipv6:
+        prefix_pattern = re.compile(r'^([0-9a-fA-F:]+/\d+)(?:\s|$)')
+    else:
+        prefix_pattern = re.compile(r'^(\d+\.\d+\.\d+\.\d+/\d+)(?:\s|$)')
+
+    lines = output.split('\n')
+    result_lines = []
+    current_entry = []
+    current_prefix = None
+    include_current = False
+    header_lines = []
+
+    for line in lines:
+        # Check if this line starts a new FIB entry
+        match = prefix_pattern.match(line)
+        if match:
+            # Save previous entry if it matched
+            if include_current and current_entry:
+                result_lines.extend(current_entry)
+
+            # Start new entry
+            current_prefix = match.group(1)
+            current_entry = [line]
+
+            # Check if this prefix is within our filter
+            try:
+                entry_net = ipaddress.ip_network(current_prefix, strict=False)
+                # Include if entry is equal to or more specific than filter
+                include_current = (
+                    entry_net.network_address >= filter_net.network_address and
+                    entry_net.broadcast_address <= filter_net.broadcast_address
+                )
+            except ValueError:
+                include_current = False
+        elif current_prefix is not None:
+            # Continuation of current entry (indented lines)
+            current_entry.append(line)
+        else:
+            # Header line (before first entry)
+            header_lines.append(line)
+
+    # Don't forget the last entry
+    if include_current and current_entry:
+        result_lines.extend(current_entry)
+
+    if result_lines:
+        return '\n'.join(header_lines + result_lines)
+    else:
+        return f"No FIB entries within {filter_prefix}"
+
+
+def _show_live_fib(af: str, prefix: str = None) -> None:
+    """Show forwarding table from VPP.
+
+    Args:
+        af: Address family ("ip" or "ipv6")
+        prefix: Optional prefix filter (e.g., "192.168.0.0/16")
+    """
+    if af == "ip":
+        # Always fetch all entries, filter client-side if needed
+        cmd = "show ip fib"
+        af_name = "IPv4"
+        is_ipv6 = False
+    else:
+        cmd = "show ip6 fib"  # VPP uses ip6, not ipv6
+        af_name = "IPv6"
+        is_ipv6 = True
+
+    success, output = vpp_exec(cmd, "core")
+    if success:
+        if prefix:
+            output = _filter_fib_output(output, prefix, is_ipv6)
+        title = f"{af_name} FIB (VPP)"
+        if prefix:
+            title += f" - filter: {prefix}"
+        _pager(output, title)
+    else:
+        error(f"Failed to get {af_name} FIB: {output}")
+
+
+def _show_live_neighbors() -> None:
+    """Show ARP/NDP neighbor table."""
+    print()
+    print(f"{Colors.BOLD}Neighbor Table (Live){Colors.NC}")
+    print("=" * 70)
+
+    print(f"\n{Colors.CYAN}IPv4 (ARP):{Colors.NC}")
+    success, output = vpp_exec("show ip neighbor", "core")
+    if success:
+        print(output if output.strip() else "  (empty)")
+
+    print(f"\n{Colors.CYAN}IPv6 (NDP):{Colors.NC}")
+    success, output = vpp_exec("show ip6 neighbor", "core")
+    if success:
+        print(output if output.strip() else "  (empty)")
+    print()
+
+
+def _show_live_nat_sessions() -> None:
+    """Show NAT session table."""
+    print()
+    print(f"{Colors.BOLD}NAT Sessions (Live){Colors.NC}")
+    print("=" * 70)
+
+    success, output = vpp_exec("show det44 sessions", "nat")
+    if success:
+        print(output if output.strip() else "  (no active sessions)")
+    else:
+        error(f"Failed to get sessions: {output}")
+    print()
+
+
+def _show_live_bgp() -> None:
+    """Show BGP neighbor status from FRR."""
+    print()
+    print(f"{Colors.BOLD}BGP Status (Live){Colors.NC}")
+    print("=" * 70)
+
+    result = subprocess.run(
+        ["ip", "netns", "exec", "dataplane", "vtysh", "-c", "show ip bgp summary"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print(result.stdout if result.stdout.strip() else "  BGP not running or no peers")
+    else:
+        error("Failed to get BGP status (FRR may not be running)")
+    print()
+
+
+def _show_live_ospf() -> None:
+    """Show OSPF neighbor status from FRR."""
+    print()
+    print(f"{Colors.BOLD}OSPF Status (Live){Colors.NC}")
+    print("=" * 70)
+
+    print(f"\n{Colors.CYAN}OSPFv2:{Colors.NC}")
+    result = subprocess.run(
+        ["ip", "netns", "exec", "dataplane", "vtysh", "-c", "show ip ospf neighbor"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print(result.stdout if result.stdout.strip() else "  (no neighbors)")
+
+    print(f"\n{Colors.CYAN}OSPFv3:{Colors.NC}")
+    result = subprocess.run(
+        ["ip", "netns", "exec", "dataplane", "vtysh", "-c", "show ipv6 ospf6 neighbor"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print(result.stdout if result.stdout.strip() else "  (no neighbors)")
+    print()
 
 
 def _show_interfaces(config) -> None:
@@ -913,25 +1284,6 @@ def cmd_status(ctx: MenuContext, args: list[str]) -> None:
     print()
 
 
-def cmd_save(ctx: MenuContext, args: list[str]) -> None:
-    """Save configuration to JSON file."""
-    if not ctx.config:
-        error("No configuration to save")
-        return
-
-    if not CONFIG_AVAILABLE:
-        error("Configuration module not available")
-        return
-
-    try:
-        save_config(ctx.config, CONFIG_FILE)
-        ctx.dirty = False
-        ctx.original_json = json.dumps(asdict(ctx.config), sort_keys=True)
-        log(f"Configuration saved to {CONFIG_FILE}")
-    except Exception as e:
-        error(f"Failed to save: {e}")
-
-
 def cmd_apply(ctx: MenuContext, args: list[str]) -> None:
     """Save configuration and apply changes (live if possible)."""
     if not ctx.config:
@@ -951,14 +1303,10 @@ def cmd_apply(ctx: MenuContext, args: list[str]) -> None:
             except Exception:
                 pass
 
-        # Save new config
-        log("Saving configuration...")
+        # Save new config and regenerate files
         save_config(ctx.config, CONFIG_FILE)
         ctx.dirty = False
         ctx.original_json = json.dumps(asdict(ctx.config), sort_keys=True)
-
-        # Render templates (ensures config files are consistent for restarts)
-        log("Regenerating configuration files...")
         render_templates(ctx.config, TEMPLATE_DIR, GENERATED_DIR)
         apply_configs(GENERATED_DIR)
 
@@ -1101,21 +1449,21 @@ def navigate(ctx: MenuContext, target: str, menus: dict) -> bool:
         return True
 
     # Special case: internal interfaces are dynamic
-    if ctx.path == ["interfaces", "internal"] and ctx.config:
+    if ctx.path == ["config", "interfaces", "internal"] and ctx.config:
         if any(i.vpp_name == target for i in ctx.config.internal):
             ctx.path.append(target)
             return True
 
     # Special case: subinterfaces on dynamic internal interfaces
-    if len(ctx.path) == 3 and ctx.path[:2] == ["interfaces", "internal"] and ctx.config:
-        iface_name = ctx.path[2]
+    if len(ctx.path) == 4 and ctx.path[:3] == ["config", "interfaces", "internal"] and ctx.config:
+        iface_name = ctx.path[3]
         if any(i.vpp_name == iface_name for i in ctx.config.internal):
             if target == "subinterfaces":
                 ctx.path.append(target)
                 return True
 
     # Special case: subinterfaces on external interface
-    if ctx.path == ["interfaces", "external"] and target == "subinterfaces":
+    if ctx.path == ["config", "interfaces", "external"] and target == "subinterfaces":
         ctx.path.append(target)
         return True
 
@@ -1224,25 +1572,141 @@ def cmd_loopback_delete(ctx: MenuContext, args: list[str]) -> None:
         error("No configuration loaded")
         return
 
-    if not args:
-        error("Usage: delete <instance>")
+    if not ctx.config.loopbacks:
+        error("No loopbacks configured")
         return
 
-    try:
-        instance = int(args[0])
-    except ValueError:
-        error("Instance must be a number")
+    if not args:
+        # Show available loopbacks
+        available = ", ".join(f"loop{lo.instance}" for lo in ctx.config.loopbacks)
+        error(f"Usage: delete <name>  (available: {available})")
         return
+
+    # Accept "loop0" or just "0"
+    arg = args[0]
+    if arg.startswith("loop"):
+        try:
+            instance = int(arg[4:])
+        except ValueError:
+            error(f"Invalid loopback name: {arg}")
+            return
+    else:
+        try:
+            instance = int(arg)
+        except ValueError:
+            error(f"Invalid loopback: {arg} (use 'loop0' or '0')")
+            return
 
     lo = next((l for l in ctx.config.loopbacks if l.instance == instance), None)
     if not lo:
-        error(f"Loopback loop{instance} not found")
+        available = ", ".join(f"loop{lo.instance}" for lo in ctx.config.loopbacks)
+        error(f"Loopback loop{instance} not found (available: {available})")
         return
 
     if prompt_yes_no(f"Delete loop{instance} ({lo.name})?"):
         ctx.config.loopbacks.remove(lo)
         ctx.dirty = True
         log(f"Deleted loopback: loop{instance}")
+
+
+def cmd_loopback_edit(ctx: MenuContext, args: list[str]) -> None:
+    """Edit an existing loopback interface."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if not ctx.config.loopbacks:
+        error("No loopbacks configured")
+        return
+
+    if not args:
+        # Show available loopbacks
+        available = ", ".join(f"loop{lo.instance}" for lo in ctx.config.loopbacks)
+        error(f"Usage: edit <instance>  (available: {available})")
+        return
+
+    # Accept "loop0" or just "0"
+    arg = args[0]
+    if arg.startswith("loop"):
+        try:
+            instance = int(arg[4:])
+        except ValueError:
+            error(f"Invalid loopback name: {arg}")
+            return
+    else:
+        try:
+            instance = int(arg)
+        except ValueError:
+            error(f"Invalid loopback: {arg} (use 'loop0' or '0')")
+            return
+
+    lo = next((l for l in ctx.config.loopbacks if l.instance == instance), None)
+    if not lo:
+        available = ", ".join(f"loop{lo.instance}" for lo in ctx.config.loopbacks)
+        error(f"Loopback loop{instance} not found (available: {available})")
+        return
+
+    print()
+    print(f"{Colors.BOLD}Edit Loopback: loop{instance}{Colors.NC}")
+    print()
+
+    # Show current values
+    current_ipv4 = f"{lo.ipv4}/{lo.ipv4_prefix}" if lo.ipv4 else "(none)"
+    current_ipv6 = f"{lo.ipv6}/{lo.ipv6_prefix}" if lo.ipv6 else "(none)"
+    print(f"  Current name: {lo.name}")
+    print(f"  Current IPv4: {current_ipv4}")
+    print(f"  Current IPv6: {current_ipv6}")
+    print()
+
+    changed = False
+
+    # Edit name
+    new_name = input(f"Name [{lo.name}]: ").strip()
+    if new_name and new_name != lo.name:
+        lo.name = new_name
+        changed = True
+
+    # Edit IPv4
+    current_ipv4_display = f"{lo.ipv4}/{lo.ipv4_prefix}" if lo.ipv4 else ""
+    new_ipv4 = input(f"IPv4 CIDR [{current_ipv4_display}]: ").strip()
+    if new_ipv4:
+        if new_ipv4.lower() == "none" or new_ipv4 == "-":
+            if lo.ipv4:
+                lo.ipv4 = None
+                lo.ipv4_prefix = None
+                changed = True
+        elif validate_ipv4_cidr(new_ipv4):
+            new_ip, new_prefix = parse_cidr(new_ipv4)
+            if new_ip != lo.ipv4 or new_prefix != lo.ipv4_prefix:
+                lo.ipv4 = new_ip
+                lo.ipv4_prefix = new_prefix
+                changed = True
+        else:
+            warn(f"Invalid IPv4 CIDR: {new_ipv4}, keeping current value")
+
+    # Edit IPv6
+    current_ipv6_display = f"{lo.ipv6}/{lo.ipv6_prefix}" if lo.ipv6 else ""
+    new_ipv6 = input(f"IPv6 CIDR [{current_ipv6_display}]: ").strip()
+    if new_ipv6:
+        if new_ipv6.lower() == "none" or new_ipv6 == "-":
+            if lo.ipv6:
+                lo.ipv6 = None
+                lo.ipv6_prefix = None
+                changed = True
+        elif validate_ipv6_cidr(new_ipv6):
+            new_ip, new_prefix = parse_cidr(new_ipv6)
+            if new_ip != lo.ipv6 or new_prefix != lo.ipv6_prefix:
+                lo.ipv6 = new_ip
+                lo.ipv6_prefix = new_prefix
+                changed = True
+        else:
+            warn(f"Invalid IPv6 CIDR: {new_ipv6}, keeping current value")
+
+    if changed:
+        ctx.dirty = True
+        log(f"Updated loopback: loop{instance}")
+    else:
+        print("No changes made")
 
 
 # =============================================================================
@@ -1343,25 +1807,41 @@ def cmd_bvi_delete(ctx: MenuContext, args: list[str]) -> None:
         error("No configuration loaded")
         return
 
-    if not args:
-        error("Usage: delete <bridge_id>")
+    if not ctx.config.bvi_domains:
+        error("No BVI domains configured")
         return
 
-    try:
-        bridge_id = int(args[0])
-    except ValueError:
-        error("Bridge ID must be a number")
+    if not args:
+        # Show available BVIs
+        available = ", ".join(f"bvi{b.bridge_id}" for b in ctx.config.bvi_domains)
+        error(f"Usage: delete <name>  (available: {available})")
         return
+
+    # Accept "bvi100" or just "100"
+    arg = args[0]
+    if arg.startswith("bvi"):
+        try:
+            bridge_id = int(arg[3:])
+        except ValueError:
+            error(f"Invalid BVI name: {arg}")
+            return
+    else:
+        try:
+            bridge_id = int(arg)
+        except ValueError:
+            error(f"Invalid BVI: {arg} (use 'bvi100' or '100')")
+            return
 
     bvi = next((b for b in ctx.config.bvi_domains if b.bridge_id == bridge_id), None)
     if not bvi:
-        error(f"BVI domain {bridge_id} not found")
+        available = ", ".join(f"bvi{b.bridge_id}" for b in ctx.config.bvi_domains)
+        error(f"BVI bvi{bridge_id} not found (available: {available})")
         return
 
-    if prompt_yes_no(f"Delete BVI {bridge_id} ({bvi.name})?"):
+    if prompt_yes_no(f"Delete bvi{bridge_id} ({bvi.name})?"):
         ctx.config.bvi_domains.remove(bvi)
         ctx.dirty = True
-        log(f"Deleted BVI domain: {bridge_id}")
+        log(f"Deleted BVI domain: bvi{bridge_id}")
 
 
 # =============================================================================
@@ -1477,7 +1957,8 @@ def cmd_vlan_passthrough_delete(ctx: MenuContext, args: list[str]) -> None:
 
 def _get_parent_interface(ctx: MenuContext):
     """Get the parent interface for sub-interface operations based on current path."""
-    path = ctx.path
+    # Strip config prefix for path matching
+    path = ctx.path[1:] if ctx.path and ctx.path[0] == "config" else ctx.path
 
     if path[:2] == ["interfaces", "external"] and "subinterfaces" in path:
         return ctx.config.external, "external"
@@ -2877,7 +3358,12 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
         return True
 
     if command == "show":
-        cmd_show(ctx, args)
+        # At root: show live operational state
+        # In config menu: show staged configuration
+        if not ctx.path or (ctx.path and ctx.path[0] != "config"):
+            cmd_show_live(ctx, args)
+        else:
+            cmd_show(ctx, args)
         return True
 
     if command == "status":
@@ -2890,10 +3376,6 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_status(ctx, args)
         return True
 
-    if command == "save":
-        cmd_save(ctx, args)
-        return True
-
     if command == "apply":
         cmd_apply(ctx, args)
         return True
@@ -2902,8 +3384,31 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
         cmd_reload(ctx, args)
         return True
 
+    # Config multi-word shortcuts: "config loopbacks add", "config nat mappings list", etc.
+    if command == "config":
+        if not args:
+            # Just "config" - navigate there
+            ctx.path = ["config"]
+            return True
+        # Re-invoke handle_command as if we're in config menu
+        original_path = ctx.path
+        ctx.path = ["config"]
+        # Rebuild command from args
+        new_cmd = " ".join(args)
+        result = handle_command(new_cmd, ctx, menus)
+        # If command wasn't recognized and path is still just ["config"], try navigation
+        if ctx.path == ["config"] and args:
+            target = args[0].lower()
+            if not navigate(ctx, target, menus):
+                # Navigation failed, restore path
+                ctx.path = original_path
+                warn(f"Unknown config command: {target}")
+        return result
+
     # Path-specific commands
     path = ctx.path
+    # For config items, strip "config" prefix so existing path comparisons work
+    config_path = path[1:] if path and path[0] == "config" else path
 
     # Shell commands - support "shell core" from any level
     if command == "shell" and args:
@@ -3093,6 +3598,9 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             return True
         if subcommand == "add":
             cmd_loopback_add(ctx, args[1:])
+            return True
+        if subcommand == "edit":
+            cmd_loopback_edit(ctx, args[1:])
             return True
         if subcommand == "delete":
             cmd_loopback_delete(ctx, args[1:])
@@ -3320,20 +3828,23 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
         cmd_agent(ctx, args)
         return True
 
-    # Loopback commands
-    if path == ["loopbacks"]:
+    # Loopback commands (under config)
+    if config_path == ["loopbacks"]:
         if command == "list":
             _show_loopbacks(ctx.config)
             return True
         if command == "add":
             cmd_loopback_add(ctx, args)
             return True
+        if command == "edit":
+            cmd_loopback_edit(ctx, args)
+            return True
         if command == "delete":
             cmd_loopback_delete(ctx, args)
             return True
 
-    # BVI commands
-    if path == ["bvi"]:
+    # BVI commands (under config)
+    if config_path == ["bvi"]:
         if command == "list":
             _show_bvi(ctx.config)
             return True
@@ -3344,8 +3855,8 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_bvi_delete(ctx, args)
             return True
 
-    # VLAN passthrough commands
-    if path == ["vlan-passthrough"]:
+    # VLAN passthrough commands (under config)
+    if config_path == ["vlan-passthrough"]:
         if command == "list":
             _show_vlan_passthrough(ctx.config)
             return True
@@ -3356,8 +3867,8 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_vlan_passthrough_delete(ctx, args)
             return True
 
-    # Sub-interface commands (for external and internal interfaces)
-    if len(path) >= 3 and path[-1] == "subinterfaces":
+    # Sub-interface commands (for external and internal interfaces, under config)
+    if len(config_path) >= 3 and config_path[-1] == "subinterfaces":
         if command == "list":
             parent, parent_name = _get_parent_interface(ctx)
             if parent:
@@ -3370,13 +3881,13 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_subinterface_delete(ctx, args)
             return True
 
-    # NAT commands
-    if path == ["nat"]:
+    # NAT commands (under config)
+    if config_path == ["nat"]:
         if command == "set-prefix":
             cmd_nat_set_prefix(ctx, args)
             return True
 
-    if path == ["nat", "mappings"]:
+    if config_path == ["nat", "mappings"]:
         if command == "list":
             _show_nat_mappings(ctx.config)
             return True
@@ -3387,7 +3898,7 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_nat_mapping_delete(ctx, args)
             return True
 
-    if path == ["nat", "bypass"]:
+    if config_path == ["nat", "bypass"]:
         if command == "list":
             _show_nat_bypass(ctx.config)
             return True
@@ -3398,8 +3909,8 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_nat_bypass_delete(ctx, args)
             return True
 
-    # BGP commands
-    if path == ["routing", "bgp"]:
+    # BGP commands (under config)
+    if config_path == ["routing", "bgp"]:
         if command == "enable":
             cmd_bgp_enable(ctx, args)
             return True
@@ -3419,8 +3930,8 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                 cmd_bgp_peers_remove(ctx, args[1:])
                 return True
 
-    # BGP peer commands (when navigated to routing/bgp/peers)
-    if path == ["routing", "bgp", "peers"]:
+    # BGP peer commands (when navigated to config/routing/bgp/peers)
+    if config_path == ["routing", "bgp", "peers"]:
         if command == "list":
             cmd_bgp_peers_list(ctx, args)
             return True
@@ -3431,8 +3942,8 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_bgp_peers_remove(ctx, args)
             return True
 
-    # OSPF commands
-    if path == ["routing", "ospf"]:
+    # OSPF commands (under config)
+    if config_path == ["routing", "ospf"]:
         if command == "enable":
             cmd_ospf_enable(ctx, args)
             return True
@@ -3440,8 +3951,8 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_ospf_disable(ctx, args)
             return True
 
-    # OSPFv3 commands
-    if path == ["routing", "ospf6"]:
+    # OSPFv3 commands (under config)
+    if config_path == ["routing", "ospf6"]:
         if command == "enable":
             cmd_ospf6_enable(ctx, args)
             return True

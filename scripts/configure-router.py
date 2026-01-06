@@ -1377,9 +1377,8 @@ def phase7_confirm(config: RouterConfig) -> bool:
 # Template Rendering
 # =============================================================================
 
-def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path) -> None:
+def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path, quiet: bool = False) -> None:
     """Render all templates with the given configuration."""
-    log("Generating configuration files...")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1442,16 +1441,16 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path)
     for script in ["vpp-core-config.sh", "incus-networking.sh", "incus-init.sh"]:
         (output_dir / script).chmod(0o755)
 
-    log(f"Configuration files generated in {output_dir}")
+    if not quiet:
+        log(f"Configuration files generated in {output_dir}")
 
 
 # =============================================================================
 # Apply Configuration
 # =============================================================================
 
-def apply_configs(output_dir: Path) -> None:
+def apply_configs(output_dir: Path, quiet: bool = False) -> None:
     """Copy generated configs to system locations."""
-    log("Applying configuration...")
 
     copies = [
         ("startup-core.conf", "/etc/vpp/startup-core.conf"),
@@ -1482,7 +1481,8 @@ def apply_configs(output_dir: Path) -> None:
     # Reload systemd
     subprocess.run(["systemctl", "daemon-reload"], check=True)
 
-    log("Configuration applied")
+    if not quiet:
+        log("Configuration applied")
 
 
 def enable_services() -> None:
@@ -1507,10 +1507,8 @@ def enable_services() -> None:
     log("Services enabled")
 
 
-def save_config(config: RouterConfig, config_file: Path) -> None:
+def save_config(config: RouterConfig, config_file: Path, quiet: bool = False) -> None:
     """Save configuration to JSON file."""
-    log(f"Saving configuration to {config_file}...")
-
     config_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Convert dataclasses to dicts
@@ -1527,7 +1525,8 @@ def save_config(config: RouterConfig, config_file: Path) -> None:
     with open(config_file, 'w') as f:
         json.dump(data, f, indent=2)
 
-    log(f"Configuration saved to {config_file}")
+    if not quiet:
+        log(f"Configuration saved to {config_file}")
 
 
 def load_config(config_file: Path) -> RouterConfig:

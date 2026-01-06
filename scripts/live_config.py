@@ -84,8 +84,29 @@ def vpp_exec(command: str, instance: str = "core") -> tuple[bool, str]:
             timeout=30
         )
         output = result.stdout.strip()
-        if result.returncode != 0 and result.stderr.strip():
-            return False, result.stderr.strip()
+        stderr = result.stderr.strip()
+
+        # Check returncode first
+        if result.returncode != 0:
+            return False, stderr or output
+
+        # VPP often returns errors in stdout with returncode 0
+        # Check for common error patterns
+        error_patterns = [
+            "unknown input",
+            "not specified",
+            "not found",
+            "failed",
+            "error",
+            "invalid",
+            "already exists",
+            "does not exist",
+        ]
+        output_lower = output.lower()
+        for pattern in error_patterns:
+            if pattern in output_lower:
+                return False, output
+
         return True, output
     except subprocess.TimeoutExpired:
         return False, "Command timed out"
@@ -612,24 +633,50 @@ class CommandGenerator:
                 f"create loopback interface instance {inst}",
                 f"set interface state loop{inst} up",
             ]
+            # Create LCP BEFORE adding IPs so linux_cp can sync addresses
+            if new.get('create_lcp'):
+                cmds.append(f"lcp create loop{inst} host-if lo{inst}")
+            # Now add IPs - they'll sync to Linux via linux_cp
             if new.get('ipv4'):
                 cmds.append(f"set interface ip address loop{inst} {new['ipv4']}/{new['ipv4_prefix']}")
             if new.get('ipv6'):
                 cmds.append(f"set interface ip address loop{inst} {new['ipv6']}/{new['ipv6_prefix']}")
-            if new.get('create_lcp'):
-                cmds.append(f"lcp create loop{inst} host-if lo{inst}")
 
             self.vpp_core_batch.commands.extend(cmds)
             self.vpp_core_batch.rollback_commands.extend([
-                f"delete loopback interface loop{inst}",
+                f"delete loopback interface intfc loop{inst}",
             ])
+
+            # Add FRR commands if loopback participates in OSPF
+            if new.get('ospf_area') is not None and new.get('ipv4'):
+                lcp_name = f"lo{inst}"
+                frr_cmds = [
+                    "router ospf",
+                    f" network {new['ipv4']}/32 area {new['ospf_area']}",
+                ]
+                if new.get('ospf_passive'):
+                    frr_cmds.append(f" passive-interface {lcp_name}")
+                frr_cmds.append("exit")
+                self.frr_batch.commands.extend(frr_cmds)
+
+            # OSPFv3 for IPv6
+            if new.get('ospf6_area') is not None and new.get('ipv6') and new.get('create_lcp'):
+                lcp_name = f"lo{inst}"
+                frr_cmds = [
+                    f"interface {lcp_name}",
+                    f" ipv6 ospf6 area {new['ospf6_area']}",
+                ]
+                if new.get('ospf6_passive'):
+                    frr_cmds.append(" ipv6 ospf6 passive")
+                frr_cmds.append("exit")
+                self.frr_batch.commands.extend(frr_cmds)
 
         elif change.change_type == ChangeType.DELETE:
             old = change.old_value
             inst = old['instance']
             if old.get('create_lcp'):
-                self.vpp_core_batch.commands.append(f"lcp delete host-if lo{inst}")
-            self.vpp_core_batch.commands.append(f"delete loopback interface loop{inst}")
+                self.vpp_core_batch.commands.append(f"lcp delete loop{inst}")
+            self.vpp_core_batch.commands.append(f"delete loopback interface intfc loop{inst}")
 
         elif change.change_type == ChangeType.MODIFY:
             old, new = change.old_value, change.new_value
@@ -656,7 +703,7 @@ class CommandGenerator:
 
             # Handle LCP changes
             if old.get('create_lcp') and not new.get('create_lcp'):
-                self.vpp_core_batch.commands.append(f"lcp delete host-if lo{inst}")
+                self.vpp_core_batch.commands.append(f"lcp delete loop{inst}")
             elif not old.get('create_lcp') and new.get('create_lcp'):
                 self.vpp_core_batch.commands.append(f"lcp create loop{inst} host-if lo{inst}")
 
@@ -672,14 +719,15 @@ class CommandGenerator:
                 f"create sub-interfaces {parent} {vlan_id}",
                 f"set interface state {parent}.{vlan_id} up",
             ]
+            # Create LCP BEFORE IPs so linux_cp syncs addresses to Linux
+            if new.get('create_lcp'):
+                lcp_name = f"{parent[:3]}-v{vlan_id}"
+                cmds.append(f"lcp create {parent}.{vlan_id} host-if {lcp_name}")
+            # Add IPs after LCP
             if new.get('ipv4'):
                 cmds.append(f"set interface ip address {parent}.{vlan_id} {new['ipv4']}/{new['ipv4_prefix']}")
             if new.get('ipv6'):
                 cmds.append(f"set interface ip address {parent}.{vlan_id} {new['ipv6']}/{new['ipv6_prefix']}")
-            if new.get('create_lcp'):
-                # Create a reasonable LCP name
-                lcp_name = f"{parent[:3]}-v{vlan_id}"
-                cmds.append(f"lcp create {parent}.{vlan_id} host-if {lcp_name}")
 
             self.vpp_core_batch.commands.extend(cmds)
             self.vpp_core_batch.rollback_commands.append(f"delete sub-interfaces {parent} {vlan_id}")
@@ -687,8 +735,8 @@ class CommandGenerator:
         elif change.change_type == ChangeType.DELETE:
             old = change.old_value
             if old.get('create_lcp'):
-                lcp_name = f"{parent[:3]}-v{vlan_id}"
-                self.vpp_core_batch.commands.append(f"lcp delete host-if {lcp_name}")
+                # lcp delete uses VPP interface name, not Linux name
+                self.vpp_core_batch.commands.append(f"lcp delete {parent}.{vlan_id}")
             self.vpp_core_batch.commands.append(f"delete sub-interfaces {parent} {vlan_id}")
 
         elif change.change_type == ChangeType.MODIFY:
@@ -739,13 +787,15 @@ class CommandGenerator:
                 else:
                     cmds.append(f"set interface l2 bridge {iface} {bid}")
 
-            # Add IPs
+            # Create LCP BEFORE IPs so linux_cp syncs addresses to Linux
+            if new.get('create_lcp'):
+                cmds.append(f"lcp create loop{bid} host-if bvi{bid}")
+
+            # Add IPs after LCP
             if new.get('ipv4'):
                 cmds.append(f"set interface ip address loop{bid} {new['ipv4']}/{new['ipv4_prefix']}")
             if new.get('ipv6'):
                 cmds.append(f"set interface ip address loop{bid} {new['ipv6']}/{new['ipv6_prefix']}")
-            if new.get('create_lcp'):
-                cmds.append(f"lcp create loop{bid} host-if bvi{bid}")
 
             self.vpp_core_batch.commands.extend(cmds)
 
@@ -754,7 +804,8 @@ class CommandGenerator:
             bid = old['bridge_id']
 
             if old.get('create_lcp'):
-                self.vpp_core_batch.commands.append(f"lcp delete host-if bvi{bid}")
+                # lcp delete uses VPP interface name (loopback), not Linux name
+                self.vpp_core_batch.commands.append(f"lcp delete loop{bid}")
 
             # Remove bridge members first
             for member in old.get('members', []):
@@ -765,7 +816,7 @@ class CommandGenerator:
 
             self.vpp_core_batch.commands.extend([
                 f"delete bridge-domain {bid}",
-                f"delete loopback interface loop{bid}",
+                f"delete loopback interface intfc loop{bid}",
             ])
 
     def _gen_vlan_passthrough_commands(self, change: ConfigChange) -> None:

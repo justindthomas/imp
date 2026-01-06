@@ -6,8 +6,11 @@ This module provides a natural language interface to router configuration
 using Ollama and tool calling. Changes are staged until 'apply'.
 """
 
+import ipaddress
 import json
 import os
+import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -448,6 +451,99 @@ def build_tools() -> list[dict]:
                 }
             }
         },
+        # Live state lookup tools
+        {
+            "type": "function",
+            "function": {
+                "name": "show_ip_route",
+                "description": "Show IPv4 routing table from FRR. Optionally filter by prefix to show routes within that prefix (e.g., '10.0.0.0/8' shows all routes within 10.0.0.0/8).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prefix": {
+                            "type": "string",
+                            "description": "Optional prefix filter (e.g., '192.168.0.0/16' to show routes within that range)"
+                        }
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "show_ipv6_route",
+                "description": "Show IPv6 routing table from FRR. Optionally filter by prefix to show routes within that prefix.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prefix": {
+                            "type": "string",
+                            "description": "Optional prefix filter (e.g., '2001:db8::/32' to show routes within that range)"
+                        }
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "show_ip_fib",
+                "description": "Show IPv4 forwarding table (FIB) from VPP dataplane. Without a prefix, shows all FIB entries. With a prefix, filters to show only FIB entries within that prefix range (same behavior as FRR's 'longer-prefixes').",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prefix": {
+                            "type": "string",
+                            "description": "Optional prefix filter (e.g., '10.0.0.0/8' to show all entries within that range)"
+                        }
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "show_ipv6_fib",
+                "description": "Show IPv6 forwarding table (FIB) from VPP dataplane. Without a prefix, shows all FIB entries. With a prefix, filters to show only FIB entries within that prefix range (same behavior as FRR's 'longer-prefixes').",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prefix": {
+                            "type": "string",
+                            "description": "Optional prefix filter (e.g., '2001:db8::/32' to show all entries within that range)"
+                        }
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "show_interfaces_live",
+                "description": "Show live interface state and counters from VPP dataplane (not staged config)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "show_neighbors",
+                "description": "Show ARP (IPv4) and NDP (IPv6) neighbor tables from VPP dataplane",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
         # Write tools
         {
             "type": "function",
@@ -536,16 +632,16 @@ def build_tools() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "delete_loopback",
-                "description": "Delete a loopback interface by its instance number",
+                "description": "Delete a loopback interface",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "instance": {
-                            "type": "integer",
-                            "description": "Loopback instance number (e.g., 0 for loop0)"
+                        "name": {
+                            "type": "string",
+                            "description": "Loopback name (e.g., 'loop0') or instance number (e.g., '0')"
                         }
                     },
-                    "required": ["instance"]
+                    "required": ["name"]
                 }
             }
         },
@@ -1188,7 +1284,8 @@ def tool_get_config_summary(config) -> str:
             lines.append(f"  Sub-interfaces: {len(iface.subinterfaces)}")
 
     if config.bgp.enabled:
-        lines.append(f"BGP: AS {config.bgp.asn}, peer {config.bgp.peer_ipv4} (AS {config.bgp.peer_asn})")
+        peer_count = len(config.bgp.peers) if config.bgp.peers else 0
+        lines.append(f"BGP: AS {config.bgp.asn}, {peer_count} peer(s)")
     else:
         lines.append("BGP: Disabled")
 
@@ -1598,11 +1695,24 @@ def tool_add_loopback(config, ctx, name: str, ipv4_cidr: str = None,
     return f"Added loop{instance} ({name}) with {', '.join(ips)}"
 
 
-def tool_delete_loopback(config, ctx, instance: int) -> str:
+def tool_delete_loopback(config, ctx, name: str) -> str:
     """Delete a loopback interface."""
+    # Parse name - accept "loop0" or "0"
+    if name.startswith("loop"):
+        try:
+            instance = int(name[4:])
+        except ValueError:
+            return f"Error: Invalid loopback name: {name}"
+    else:
+        try:
+            instance = int(name)
+        except ValueError:
+            return f"Error: Invalid loopback: {name} (use 'loop0' or '0')"
+
     lo = next((l for l in config.loopbacks if l.instance == instance), None)
     if not lo:
-        return f"Loopback loop{instance} not found"
+        available = ", ".join(f"loop{l.instance}" for l in config.loopbacks)
+        return f"Loopback loop{instance} not found (available: {available})"
 
     config.loopbacks.remove(lo)
     ctx.dirty = True
@@ -1914,6 +2024,195 @@ def tool_get_ospf6_config(config) -> str:
         lines.append("  (no interfaces configured)")
 
     return "\n".join(lines)
+
+
+# =============================================================================
+# Live State Lookup Tools
+# =============================================================================
+
+def tool_show_ip_route(prefix: str = None) -> str:
+    """Show IPv4 routing table from FRR."""
+    if prefix:
+        cmd = f"show ip route {prefix} longer-prefixes"
+    else:
+        cmd = "show ip route"
+
+    result = subprocess.run(
+        ["ip", "netns", "exec", "dataplane", "vtysh", "-c", cmd],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        output = result.stdout.strip()
+        if not output:
+            return "No routes found" + (f" matching {prefix}" if prefix else "")
+        return output
+    else:
+        return f"Error: Failed to get routes (FRR may not be running)"
+
+
+def tool_show_ipv6_route(prefix: str = None) -> str:
+    """Show IPv6 routing table from FRR."""
+    if prefix:
+        cmd = f"show ipv6 route {prefix} longer-prefixes"
+    else:
+        cmd = "show ipv6 route"
+
+    result = subprocess.run(
+        ["ip", "netns", "exec", "dataplane", "vtysh", "-c", cmd],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        output = result.stdout.strip()
+        if not output:
+            return "No routes found" + (f" matching {prefix}" if prefix else "")
+        return output
+    else:
+        return f"Error: Failed to get routes (FRR may not be running)"
+
+
+def _filter_fib_output(output: str, filter_prefix: str, is_ipv6: bool = False) -> str:
+    """Filter VPP FIB output to entries within a given prefix.
+
+    VPP's native 'show ip fib <prefix>' performs a longest-match lookup,
+    returning the covering route. This function instead filters to show
+    all entries that fall within the specified prefix (like FRR's
+    'longer-prefixes' option).
+
+    Args:
+        output: Raw VPP FIB output
+        filter_prefix: Prefix to filter by (e.g., "10.0.0.0/8")
+        is_ipv6: True for IPv6, False for IPv4
+
+    Returns:
+        Filtered FIB output containing only matching entries
+    """
+    try:
+        filter_net = ipaddress.ip_network(filter_prefix, strict=False)
+    except ValueError:
+        return output  # Invalid filter, return unfiltered
+
+    # Regex to match FIB entry prefixes at start of line
+    # The prefix may be alone on the line or followed by whitespace
+    if is_ipv6:
+        prefix_pattern = re.compile(r'^([0-9a-fA-F:]+/\d+)(?:\s|$)')
+    else:
+        prefix_pattern = re.compile(r'^(\d+\.\d+\.\d+\.\d+/\d+)(?:\s|$)')
+
+    lines = output.split('\n')
+    result_lines = []
+    current_entry = []
+    current_prefix = None
+    include_current = False
+    header_lines = []
+
+    for line in lines:
+        match = prefix_pattern.match(line)
+        if match:
+            if include_current and current_entry:
+                result_lines.extend(current_entry)
+
+            current_prefix = match.group(1)
+            current_entry = [line]
+
+            try:
+                entry_net = ipaddress.ip_network(current_prefix, strict=False)
+                include_current = (
+                    entry_net.network_address >= filter_net.network_address and
+                    entry_net.broadcast_address <= filter_net.broadcast_address
+                )
+            except ValueError:
+                include_current = False
+        elif current_prefix is not None:
+            current_entry.append(line)
+        else:
+            header_lines.append(line)
+
+    if include_current and current_entry:
+        result_lines.extend(current_entry)
+
+    if result_lines:
+        return '\n'.join(header_lines + result_lines)
+    else:
+        return f"No FIB entries within {filter_prefix}"
+
+
+def tool_show_ip_fib(prefix: str = None) -> str:
+    """Show IPv4 FIB from VPP."""
+    # Always fetch all entries, filter client-side if needed
+    cmd = "show ip fib"
+
+    success, output = vpp_exec(cmd, "core")
+    if success:
+        output = output.strip()
+        if not output:
+            return "No FIB entries found"
+
+        # Apply client-side filtering if prefix specified
+        if prefix:
+            output = _filter_fib_output(output, prefix, is_ipv6=False)
+
+        # Limit output length for agent context
+        lines = output.split('\n')
+        if len(lines) > 100:
+            return '\n'.join(lines[:100]) + f"\n... ({len(lines) - 100} more entries)"
+        return output
+    else:
+        return f"Error: Failed to get FIB: {output}"
+
+
+def tool_show_ipv6_fib(prefix: str = None) -> str:
+    """Show IPv6 FIB from VPP."""
+    # Always fetch all entries, filter client-side if needed
+    cmd = "show ip6 fib"  # VPP uses ip6, not ipv6
+
+    success, output = vpp_exec(cmd, "core")
+    if success:
+        output = output.strip()
+        if not output:
+            return "No FIB entries found"
+
+        # Apply client-side filtering if prefix specified
+        if prefix:
+            output = _filter_fib_output(output, prefix, is_ipv6=True)
+
+        # Limit output length for agent context
+        lines = output.split('\n')
+        if len(lines) > 100:
+            return '\n'.join(lines[:100]) + f"\n... ({len(lines) - 100} more entries)"
+        return output
+    else:
+        return f"Error: Failed to get FIB: {output}"
+
+
+def tool_show_interfaces_live() -> str:
+    """Show live interface state from VPP."""
+    success, output = vpp_exec("show interface", "core")
+    if success:
+        return output.strip() if output.strip() else "No interfaces found"
+    else:
+        return f"Error: Failed to get interfaces: {output}"
+
+
+def tool_show_neighbors() -> str:
+    """Show ARP and NDP neighbor tables from VPP."""
+    lines = ["IPv4 Neighbors (ARP):"]
+
+    success, output = vpp_exec("show ip neighbor", "core")
+    if success:
+        lines.append(output.strip() if output.strip() else "  (empty)")
+    else:
+        lines.append(f"  Error: {output}")
+
+    lines.append("")
+    lines.append("IPv6 Neighbors (NDP):")
+
+    success, output = vpp_exec("show ip6 neighbor", "core")
+    if success:
+        lines.append(output.strip() if output.strip() else "  (empty)")
+    else:
+        lines.append(f"  Error: {output}")
+
+    return '\n'.join(lines)
 
 
 def tool_enable_ospf(config, ctx, router_id: str = None, default_originate: bool = False) -> str:
@@ -2497,6 +2796,20 @@ def execute_tool(name: str, args: dict, config, ctx) -> str:
         if name == "get_ospf6_config":
             return tool_get_ospf6_config(config)
 
+        # Live state lookup tools
+        if name == "show_ip_route":
+            return tool_show_ip_route(prefix=args.get("prefix"))
+        if name == "show_ipv6_route":
+            return tool_show_ipv6_route(prefix=args.get("prefix"))
+        if name == "show_ip_fib":
+            return tool_show_ip_fib(prefix=args.get("prefix"))
+        if name == "show_ipv6_fib":
+            return tool_show_ipv6_fib(prefix=args.get("prefix"))
+        if name == "show_interfaces_live":
+            return tool_show_interfaces_live()
+        if name == "show_neighbors":
+            return tool_show_neighbors()
+
         # Write tools
         if name == "add_subinterface":
             return tool_add_subinterface(
@@ -2522,7 +2835,7 @@ def execute_tool(name: str, args: dict, config, ctx) -> str:
                 create_lcp=args.get("create_lcp", True)
             )
         if name == "delete_loopback":
-            return tool_delete_loopback(config, ctx, instance=args.get("instance", 0))
+            return tool_delete_loopback(config, ctx, name=args.get("name", ""))
         if name == "add_nat_mapping":
             return tool_add_nat_mapping(
                 config, ctx,
