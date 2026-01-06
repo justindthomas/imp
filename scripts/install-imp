@@ -626,13 +626,21 @@ EOF
     ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure-router"
     ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure_router.py"
 
-    # Install imp CLI, REPL, and Agent
+    # Install imp CLI, REPL, Agent, and module loader
     cp "$SCRIPT_DIR/imp" "$ROOTFS/usr/local/bin/"
     cp "$SCRIPT_DIR/imp_repl.py" "$ROOTFS/usr/local/bin/"
     cp "$SCRIPT_DIR/imp_agent.py" "$ROOTFS/usr/local/bin/"
+    cp "$SCRIPT_DIR/module_loader.py" "$ROOTFS/usr/local/bin/"
     chmod +x "$ROOTFS/usr/local/bin/imp"
     chmod +x "$ROOTFS/usr/local/bin/imp_repl.py"
     chmod +x "$ROOTFS/usr/local/bin/imp_agent.py"
+    chmod +x "$ROOTFS/usr/local/bin/module_loader.py"
+
+    # Install module examples (templates for users to copy and customize)
+    mkdir -p "$ROOTFS/usr/share/imp/module-examples"
+    if [[ -d "$CONFIG_DIR/module-examples" ]]; then
+        cp "$CONFIG_DIR/module-examples/"*.yaml "$ROOTFS/usr/share/imp/module-examples/" 2>/dev/null || true
+    fi
 
     # -------------------------------------------------------------------------
     # Enable services

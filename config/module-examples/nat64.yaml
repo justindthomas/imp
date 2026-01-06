@@ -1,0 +1,62 @@
+name: nat64
+display_name: "NAT64 Translation"
+description: "IPv6-to-IPv4 translation for IPv6-only clients"
+
+# How this module connects to core VPP
+topology:
+  connections:
+    - name: translation
+      purpose: "Receives IPv6 traffic, returns translated IPv4"
+      create_lcp: false
+
+# VPP plugins
+plugins:
+  - memif_plugin.so
+  - nat_plugin.so
+disable_plugins:
+  - dpdk_plugin.so
+
+# CPU requirements
+cpu:
+  min_cores: 0
+  ideal_cores: 1
+
+# Configuration schema (what fields can be set in router.json)
+config_schema:
+  prefix:
+    type: string
+    format: ipv6_cidr
+    default: "64:ff9b::/96"
+    description: "NAT64 well-known prefix"
+  pool:
+    type: string
+    format: ipv4_cidr
+    description: "IPv4 pool for translated addresses"
+
+# Show commands exposed in CLI and agent
+show_commands:
+  - name: sessions
+    vpp_command: "show nat64 st"
+    description: "Show active NAT64 sessions"
+  - name: pool
+    vpp_command: "show nat64 pool"
+    description: "Show NAT64 address pool"
+  - name: prefix
+    vpp_command: "show nat64 prefix"
+    description: "Show NAT64 prefix configuration"
+
+# ABF rules: match IPv6 traffic destined to NAT64 prefix
+abf:
+  match: destination_prefix
+  prefix_field: prefix  # Use config.prefix value
+
+# VPP commands (Jinja2 template rendered with module context)
+commands: |
+  {% set conn = module.connections | first %}
+  nat64 add pool address {{ module.config.pool }}
+  nat64 add interface memif{{ conn.socket_id }}/0 in
+  nat64 add interface memif{{ conn.socket_id }}/0 out
+  nat64 set prefix {{ module.config.prefix | default('64:ff9b::/96') }}
+
+  # Route back to core for return traffic
+  ip route add 0.0.0.0/0 via {{ conn.core_ip }} memif{{ conn.socket_id }}/0

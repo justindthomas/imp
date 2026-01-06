@@ -1259,6 +1259,42 @@ def build_tools() -> list[dict]:
 
 
 # =============================================================================
+# Module Helpers
+# =============================================================================
+
+def get_module_config(config, module_name: str) -> dict:
+    """
+    Get configuration for a specific module from config.modules.
+
+    Returns:
+        Module config dict or empty dict if not found/disabled
+    """
+    if not config or not hasattr(config, 'modules'):
+        return {}
+
+    for m in config.modules:
+        if m.get('name') == module_name and m.get('enabled'):
+            return m.get('config', {})
+    return {}
+
+
+def find_module(config, module_name: str) -> dict:
+    """
+    Find a module entry in config.modules.
+
+    Returns:
+        Module dict or None if not found
+    """
+    if not config or not hasattr(config, 'modules'):
+        return None
+
+    for m in config.modules:
+        if m.get('name') == module_name:
+            return m
+    return None
+
+
+# =============================================================================
 # Tool Execution - Read Operations
 # =============================================================================
 
@@ -1483,21 +1519,32 @@ def tool_get_vlan_passthrough(config) -> str:
 
 
 def tool_get_nat_config(config) -> str:
-    """Get NAT configuration."""
+    """Get NAT configuration from NAT module."""
     if not config:
         return "No configuration loaded"
 
+    nat_module = find_module(config, 'nat')
+    if not nat_module:
+        return "NAT module not configured. Install and enable with: config modules install nat && config modules enable nat"
+
+    if not nat_module.get('enabled'):
+        return "NAT module is disabled"
+
+    nat_config = nat_module.get('config', {})
+    mappings = nat_config.get('mappings', [])
+    bypass_pairs = nat_config.get('bypass_pairs', [])
+
     lines = [
-        f"NAT Pool Prefix: {config.nat.bgp_prefix or 'Not set'}",
-        f"Mappings: {len(config.nat.mappings)}",
+        f"NAT Pool Prefix: {nat_config.get('bgp_prefix') or 'Not set'}",
+        f"Mappings: {len(mappings)}",
     ]
 
-    for m in config.nat.mappings:
-        lines.append(f"  {m.source_network} -> {m.nat_pool}")
+    for m in mappings:
+        lines.append(f"  {m.get('source_network')} -> {m.get('nat_pool')}")
 
-    lines.append(f"Bypass Rules: {len(config.nat.bypass_pairs)}")
-    for bp in config.nat.bypass_pairs:
-        lines.append(f"  {bp.source} -> {bp.destination}")
+    lines.append(f"Bypass Rules: {len(bypass_pairs)}")
+    for bp in bypass_pairs:
+        lines.append(f"  {bp.get('source')} -> {bp.get('destination')}")
 
     return "\n".join(lines)
 
@@ -1719,6 +1766,28 @@ def tool_delete_loopback(config, ctx, name: str) -> str:
     return f"Deleted loop{instance} ({lo.name})"
 
 
+def _ensure_nat_module(config) -> dict:
+    """Ensure NAT module exists and is enabled, return module dict."""
+    nat_module = find_module(config, 'nat')
+    if not nat_module:
+        # Create NAT module entry
+        config.modules.append({
+            'name': 'nat',
+            'enabled': True,
+            'config': {
+                'bgp_prefix': '',
+                'mappings': [],
+                'bypass_pairs': []
+            }
+        })
+        return config.modules[-1]
+    if not nat_module.get('enabled'):
+        nat_module['enabled'] = True
+    if 'config' not in nat_module:
+        nat_module['config'] = {'bgp_prefix': '', 'mappings': [], 'bypass_pairs': []}
+    return nat_module
+
+
 def tool_add_nat_mapping(config, ctx, source_network: str, nat_pool: str) -> str:
     """Add a NAT mapping."""
     classes = _get_config_classes()
@@ -1730,25 +1799,35 @@ def tool_add_nat_mapping(config, ctx, source_network: str, nat_pool: str) -> str
     if not classes['validate_ipv4_cidr'](nat_pool):
         return f"Error: Invalid NAT pool: {nat_pool}"
 
+    nat_module = _ensure_nat_module(config)
+    nat_config = nat_module['config']
+    if 'mappings' not in nat_config:
+        nat_config['mappings'] = []
+
     # Check for duplicate
-    if any(m.source_network == source_network for m in config.nat.mappings):
+    if any(m.get('source_network') == source_network for m in nat_config['mappings']):
         return f"Error: Mapping for {source_network} already exists"
 
-    config.nat.mappings.append(classes['NATMapping'](
-        source_network=source_network,
-        nat_pool=nat_pool
-    ))
+    nat_config['mappings'].append({
+        'source_network': source_network,
+        'nat_pool': nat_pool
+    })
     ctx.dirty = True
     return f"Added NAT mapping: {source_network} -> {nat_pool}"
 
 
 def tool_delete_nat_mapping(config, ctx, source_network: str) -> str:
     """Delete a NAT mapping."""
-    mapping = next((m for m in config.nat.mappings if m.source_network == source_network), None)
+    nat_module = find_module(config, 'nat')
+    if not nat_module or 'config' not in nat_module:
+        return "NAT module not configured"
+
+    mappings = nat_module['config'].get('mappings', [])
+    mapping = next((m for m in mappings if m.get('source_network') == source_network), None)
     if not mapping:
         return f"NAT mapping for {source_network} not found"
 
-    config.nat.mappings.remove(mapping)
+    mappings.remove(mapping)
     ctx.dirty = True
     return f"Deleted NAT mapping for {source_network}"
 
@@ -1764,26 +1843,37 @@ def tool_add_nat_bypass(config, ctx, source: str, destination: str) -> str:
     if not classes['validate_ipv4_cidr'](destination):
         return f"Error: Invalid destination network: {destination}"
 
+    nat_module = _ensure_nat_module(config)
+    nat_config = nat_module['config']
+    if 'bypass_pairs' not in nat_config:
+        nat_config['bypass_pairs'] = []
+
     # Check for duplicate
-    if any(b.source == source and b.destination == destination for b in config.nat.bypass_pairs):
+    if any(b.get('source') == source and b.get('destination') == destination
+           for b in nat_config['bypass_pairs']):
         return f"Error: Bypass rule {source} -> {destination} already exists"
 
-    config.nat.bypass_pairs.append(classes['ACLBypassPair'](
-        source=source,
-        destination=destination
-    ))
+    nat_config['bypass_pairs'].append({
+        'source': source,
+        'destination': destination
+    })
     ctx.dirty = True
     return f"Added NAT bypass: {source} -> {destination}"
 
 
 def tool_delete_nat_bypass(config, ctx, source: str, destination: str) -> str:
     """Delete a NAT bypass rule."""
-    bypass = next((b for b in config.nat.bypass_pairs
-                   if b.source == source and b.destination == destination), None)
+    nat_module = find_module(config, 'nat')
+    if not nat_module or 'config' not in nat_module:
+        return "NAT module not configured"
+
+    bypass_pairs = nat_module['config'].get('bypass_pairs', [])
+    bypass = next((b for b in bypass_pairs
+                   if b.get('source') == source and b.get('destination') == destination), None)
     if not bypass:
         return f"NAT bypass rule {source} -> {destination} not found"
 
-    config.nat.bypass_pairs.remove(bypass)
+    bypass_pairs.remove(bypass)
     ctx.dirty = True
     return f"Deleted NAT bypass: {source} -> {destination}"
 
@@ -1797,8 +1887,9 @@ def tool_set_nat_prefix(config, ctx, prefix: str) -> str:
     if not classes['validate_ipv4_cidr'](prefix):
         return f"Error: Invalid prefix: {prefix}"
 
-    old_prefix = config.nat.bgp_prefix
-    config.nat.bgp_prefix = prefix
+    nat_module = _ensure_nat_module(config)
+    old_prefix = nat_module['config'].get('bgp_prefix', '')
+    nat_module['config']['bgp_prefix'] = prefix
     ctx.dirty = True
 
     if old_prefix:

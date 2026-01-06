@@ -49,6 +49,23 @@ except ImportError:
     GENERATED_DIR = Path("/tmp/imp-generated-config")
     CONFIG_AVAILABLE = False
 
+# Import module system
+try:
+    from module_loader import (
+        list_available_modules,
+        list_example_modules,
+        install_module_from_example,
+        load_module_definition,
+        ensure_modules_dir,
+        MODULE_DEFINITIONS_DIR,
+        MODULE_EXAMPLES_DIR,
+    )
+    MODULE_LOADER_AVAILABLE = True
+except ImportError:
+    MODULE_LOADER_AVAILABLE = False
+    MODULE_DEFINITIONS_DIR = Path("/persistent/config/modules")
+    MODULE_EXAMPLES_DIR = Path("/usr/share/imp/module-examples")
+
 
 # =============================================================================
 # Colors and Styling
@@ -316,6 +333,9 @@ def build_menu_tree() -> dict:
                                 "ospf6": {"commands": ["show", "enable", "disable", "set"]},
                             },
                             "commands": ["show"],
+                        },
+                        "modules": {
+                            "commands": ["available", "list", "install", "enable", "disable"],
                         },
                         "nat": {
                             "children": {
@@ -2558,11 +2578,172 @@ def cmd_ospf6_disable(ctx: MenuContext, args: list[str]) -> None:
 
 
 # =============================================================================
+# Module Commands
+# =============================================================================
+
+def cmd_modules_available(ctx: MenuContext, args: list[str]) -> None:
+    """List available module examples that can be installed."""
+    if not MODULE_LOADER_AVAILABLE:
+        error("Module loader not available")
+        return
+
+    examples = list_example_modules()
+    if not examples:
+        info(f"No module examples found in {MODULE_EXAMPLES_DIR}")
+        return
+
+    print("\nAvailable module examples:")
+    for name, display, desc in examples:
+        print(f"  {name:12} - {display}")
+        if desc:
+            print(f"               {desc}")
+    print(f"\nInstall with: config modules install <name>")
+
+
+def cmd_modules_list(ctx: MenuContext, args: list[str]) -> None:
+    """List installed modules."""
+    if not MODULE_LOADER_AVAILABLE:
+        error("Module loader not available")
+        return
+
+    modules = list_available_modules()
+    if not modules:
+        info(f"No modules installed in {MODULE_DEFINITIONS_DIR}")
+        info("Use 'config modules install <name>' to install from examples")
+        return
+
+    # Check which are enabled in config
+    enabled_modules = set()
+    if ctx.config and hasattr(ctx.config, 'modules'):
+        for m in ctx.config.modules:
+            if m.get('enabled'):
+                enabled_modules.add(m.get('name'))
+
+    print("\nInstalled modules:")
+    for name, display, desc in modules:
+        status = "[enabled]" if name in enabled_modules else "[disabled]"
+        print(f"  {name:12} {status:11} - {display}")
+    print()
+
+
+def cmd_modules_install(ctx: MenuContext, args: list[str]) -> None:
+    """Install a module from examples."""
+    if not MODULE_LOADER_AVAILABLE:
+        error("Module loader not available")
+        return
+
+    if not args:
+        error("Usage: config modules install <name>")
+        info("List available modules with: config modules available")
+        return
+
+    name = args[0]
+    try:
+        install_module_from_example(name)
+        log(f"Installed module '{name}'")
+        info(f"Enable with: config modules enable {name}")
+    except FileNotFoundError:
+        error(f"Module example '{name}' not found")
+        info("List available modules with: config modules available")
+    except FileExistsError:
+        warn(f"Module '{name}' is already installed")
+
+
+def cmd_modules_enable(ctx: MenuContext, args: list[str]) -> None:
+    """Enable a module."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if not args:
+        error("Usage: config modules enable <name>")
+        return
+
+    name = args[0]
+
+    # Check if module definition exists
+    module_yaml = MODULE_DEFINITIONS_DIR / f"{name}.yaml"
+    if not module_yaml.exists():
+        error(f"Module '{name}' not installed")
+        info(f"Install with: config modules install {name}")
+        return
+
+    # Check if already in modules list
+    for m in ctx.config.modules:
+        if m.get('name') == name:
+            if m.get('enabled'):
+                warn(f"Module '{name}' is already enabled")
+                return
+            m['enabled'] = True
+            ctx.dirty = True
+            log(f"Enabled module '{name}'")
+            return
+
+    # Add new module entry
+    ctx.config.modules.append({
+        'name': name,
+        'enabled': True,
+        'config': {}
+    })
+    ctx.dirty = True
+    log(f"Enabled module '{name}'")
+    info(f"Configure with: config {name} ...")
+
+
+def cmd_modules_disable(ctx: MenuContext, args: list[str]) -> None:
+    """Disable a module."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if not args:
+        error("Usage: config modules disable <name>")
+        return
+
+    name = args[0]
+
+    for m in ctx.config.modules:
+        if m.get('name') == name:
+            if not m.get('enabled'):
+                warn(f"Module '{name}' is already disabled")
+                return
+            m['enabled'] = False
+            ctx.dirty = True
+            log(f"Disabled module '{name}'")
+            return
+
+    error(f"Module '{name}' not in configuration")
+
+
+# =============================================================================
 # VPP Command Execution
 # =============================================================================
 
 VPP_CORE_SOCKET = "/run/vpp/core-cli.sock"
-VPP_NAT_SOCKET = "/run/vpp/nat-cli.sock"
+VPP_SOCKETS_DIR = Path("/run/vpp")
+
+
+def get_vpp_socket(instance: str) -> str:
+    """Get the socket path for a VPP instance."""
+    if instance == "core":
+        return VPP_CORE_SOCKET
+    return f"/run/vpp/{instance}-cli.sock"
+
+
+def list_running_modules() -> list[str]:
+    """
+    Discover running VPP module sockets.
+
+    Returns:
+        List of module names (e.g., ['nat', 'nat64'])
+    """
+    modules = []
+    if VPP_SOCKETS_DIR.exists():
+        for sock in VPP_SOCKETS_DIR.glob("*-cli.sock"):
+            name = sock.stem.replace("-cli", "")
+            if name != "core":
+                modules.append(name)
+    return sorted(modules)
 
 
 def vpp_exec(command: str, instance: str = "core") -> tuple[bool, str]:
@@ -2571,12 +2752,12 @@ def vpp_exec(command: str, instance: str = "core") -> tuple[bool, str]:
 
     Args:
         command: VPP CLI command to execute
-        instance: "core" or "nat"
+        instance: "core" or module name (e.g., "nat")
 
     Returns:
         (success: bool, output: str)
     """
-    socket = VPP_CORE_SOCKET if instance == "core" else VPP_NAT_SOCKET
+    socket = get_vpp_socket(instance)
 
     if not Path(socket).exists():
         return False, f"VPP {instance} socket not found: {socket}"
@@ -2625,12 +2806,30 @@ def cmd_shell_core(ctx: MenuContext, args: list[str]) -> None:
 
 
 def cmd_shell_nat(ctx: MenuContext, args: list[str]) -> None:
-    """Open VPP NAT CLI."""
-    socket = "/run/vpp/nat-cli.sock"
-    if not Path(socket).exists():
-        error("VPP NAT socket not found")
+    """Open VPP NAT CLI (backwards compat)."""
+    cmd_shell_module(ctx, ["nat"])
+
+
+def cmd_shell_module(ctx: MenuContext, args: list[str]) -> None:
+    """Open VPP module CLI."""
+    if not args:
+        # List available modules
+        modules = list_running_modules()
+        if modules:
+            print("Available module shells:")
+            for m in modules:
+                print(f"  {m}")
+            print("\nUsage: shell <module>")
+        else:
+            warn("No module sockets found in /run/vpp/")
         return
-    log("Entering VPP NAT CLI...")
+
+    module_name = args[0]
+    socket = get_vpp_socket(module_name)
+    if not Path(socket).exists():
+        error(f"VPP {module_name} socket not found: {socket}")
+        return
+    log(f"Entering VPP {module_name} CLI...")
     print("Type 'quit' to return\n")
     subprocess.run(["vppctl", "-s", socket], check=False)
 
@@ -3419,9 +3618,9 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
         if subcommand == "core":
             cmd_shell_core(ctx, args[1:])
             return True
-        if subcommand == "nat":
-            cmd_shell_nat(ctx, args[1:])
-            return True
+        # Dynamic module shells
+        cmd_shell_module(ctx, [subcommand] + args[1:])
+        return True
 
     # Shell commands when already in shell menu
     if path == ["shell"]:
@@ -3431,9 +3630,9 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
         if command == "core":
             cmd_shell_core(ctx, args)
             return True
-        if command == "nat":
-            cmd_shell_nat(ctx, args)
-            return True
+        # Dynamic module shells
+        cmd_shell_module(ctx, [command] + args)
+        return True
 
     # Capture commands - support "capture start" from any level
     if command == "capture" and args:
@@ -3879,6 +4078,43 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             return True
         if command == "delete":
             cmd_subinterface_delete(ctx, args)
+            return True
+
+    # Modules commands (under config)
+    if config_path == ["modules"]:
+        if command == "available":
+            cmd_modules_available(ctx, args)
+            return True
+        if command == "list":
+            cmd_modules_list(ctx, args)
+            return True
+        if command == "install":
+            cmd_modules_install(ctx, args)
+            return True
+        if command == "enable":
+            cmd_modules_enable(ctx, args)
+            return True
+        if command == "disable":
+            cmd_modules_disable(ctx, args)
+            return True
+
+    # Multi-word shortcuts for modules: "config modules install nat"
+    if command == "modules" and args:
+        subcmd = args[0].lower()
+        if subcmd == "available":
+            cmd_modules_available(ctx, args[1:])
+            return True
+        if subcmd == "list":
+            cmd_modules_list(ctx, args[1:])
+            return True
+        if subcmd == "install":
+            cmd_modules_install(ctx, args[1:])
+            return True
+        if subcmd == "enable":
+            cmd_modules_enable(ctx, args[1:])
+            return True
+        if subcmd == "disable":
+            cmd_modules_disable(ctx, args[1:])
             return True
 
     # NAT commands (under config)

@@ -108,38 +108,66 @@ set interface ip address loop{{ bvi.bridge_id }} {{ bvi.ipv6 }}/{{ bvi.ipv6_pref
 {% endfor %}
 {% endif %}
 
-# Memif to NAT instance (internal side)
-create memif socket id 1 filename /run/vpp/memif-nat-int.sock
-create interface memif id 0 socket-id 1 master
-set interface state memif1/0 up
-set interface ip address memif1/0 169.254.1.4/31
-
-# Memif to NAT instance (external side)
-create memif socket id 2 filename /run/vpp/memif-nat-ext.sock
-create interface memif id 0 socket-id 2 master
-lcp create memif2/0 host-if memif2
-set interface state memif2/0 up
-set interface ip address memif2/0 169.254.1.7/31
-
-# ACL-based forwarding to NAT for internal networks
-# Each internal network gets an ACL that:
-# - Denies traffic to container network (stays local)
-# - Denies traffic to specific bypass pairs (direct routing)
-# - Permits everything else (goes to NAT)
-{% for iface in internal %}
-set acl-plugin acl deny src {{ iface.network }} dst {{ container.network }}{% for bp in nat.bypass_pairs %}, deny src {{ bp.source }} dst {{ bp.destination }}{% endfor %}, permit src {{ iface.network }}
-abf policy add id {{ loop.index0 }} acl {{ loop.index0 }} via 169.254.1.5 memif1/0
-abf attach ip4 policy {{ loop.index0 }} {{ iface.vpp_name }}
+{% if modules %}
+# Module memif connections (master side)
+{% for module in modules if module.enabled %}
+# Memif connections to {{ module.name }} ({{ module.display_name }})
+{% for conn in module.connections %}
+create memif socket id {{ conn.socket_id }} filename {{ conn.socket_path }}
+create interface memif id 0 socket-id {{ conn.socket_id }} master
+{% if conn.create_lcp %}
+lcp create memif{{ conn.socket_id }}/0 host-if memif-{{ module.name }}-{{ conn.name[:3] }}
+{% endif %}
+set interface state memif{{ conn.socket_id }}/0 up
+set interface ip address memif{{ conn.socket_id }}/0 {{ conn.core_ip }}/{{ conn.prefix }}
 {% endfor %}
+{% endfor %}
+
+# Dynamic ABF for modules
+{% set abf_id = namespace(value=0) %}
+{% for module in modules if module.enabled and module.abf %}
+{% if module.abf.source == 'internal_interfaces' %}
+# ABF rules for {{ module.name }}: steering internal traffic to module
+{% for iface in internal %}
+{# Build ACL: deny excludes, permit source network #}
+set acl-plugin acl {% for excl in module.abf.exclude %}{% if excl == 'container_network' %}deny src {{ iface.network }} dst {{ container.network }}, {% elif excl == 'bypass_pairs' %}{% for bp in module.config.bypass_pairs %}deny src {{ bp.source }} dst {{ bp.destination }}, {% endfor %}{% endif %}{% endfor %}permit src {{ iface.network }}
+{% set target_conn = module.connections | selectattr('name', 'eq', 'internal') | first %}
+abf policy add id {{ abf_id.value }} acl {{ abf_id.value }} via {{ target_conn.module_ip }} memif{{ target_conn.socket_id }}/0
+abf attach ip4 policy {{ abf_id.value }} {{ iface.vpp_name }}
+{% set abf_id.value = abf_id.value + 1 %}
+{% endfor %}
+{% elif module.abf.match == 'destination_prefix' %}
+# ABF rules for {{ module.name }}: match destination prefix
+set acl-plugin acl permit dst {{ module.config[module.abf.prefix_field] }}
+{% set target_conn = module.connections | first %}
+abf policy add id {{ abf_id.value }} acl {{ abf_id.value }} via {{ target_conn.module_ip }} memif{{ target_conn.socket_id }}/0
+{% for iface in internal %}
+abf attach ip6 policy {{ abf_id.value }} {{ iface.vpp_name }}
+{% endfor %}
+{% set abf_id.value = abf_id.value + 1 %}
+{% endif %}
+{% endfor %}
+
+# Routes for module return traffic
+{% for module in modules if module.enabled %}
+{% for conn in module.connections if conn.create_lcp %}
+{# Routes for return traffic from modules - only if LCP created for FRR visibility #}
+{% endfor %}
+{% if module.config.bgp_prefix is defined %}
+# Route for {{ module.name }} pool (via module)
+{% set ext_conn = module.connections | selectattr('name', 'eq', 'external') | first %}
+{% if ext_conn %}
+ip route add {{ module.config.bgp_prefix }} via {{ ext_conn.module_ip }} memif{{ ext_conn.socket_id }}/0
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
 
 # Default routes
 ip route add 0.0.0.0/0 via {{ external.ipv4_gateway }} external
 {% if external.ipv6_gateway %}
 ip route add ::/0 via {{ external.ipv6_gateway }} external
 {% endif %}
-
-# Route for NAT pool (via NAT instance)
-ip route add {{ nat.bgp_prefix }} via 169.254.1.6 memif2/0
 {% if vlan_passthrough %}
 
 # VLAN pass-through (L2 cross-connect between external and internal interfaces)

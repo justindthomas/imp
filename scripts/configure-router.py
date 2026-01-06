@@ -21,13 +21,30 @@ import subprocess
 import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 try:
     from jinja2 import Environment, FileSystemLoader
 except ImportError:
     print("ERROR: python3-jinja2 is required. Install with: apt install python3-jinja2")
     sys.exit(1)
+
+# Import module system types
+try:
+    from module_loader import (
+        VPPModuleInstance,
+        VPPModuleConnection,
+        ModuleShowCommand,
+        ModuleABF,
+        load_modules_from_config,
+        allocate_memif_addresses,
+    )
+    HAS_MODULE_LOADER = True
+except ImportError:
+    HAS_MODULE_LOADER = False
+    # Define stub types if module_loader not available
+    VPPModuleInstance = None
+    VPPModuleConnection = None
 
 
 # =============================================================================
@@ -404,12 +421,12 @@ class RouterConfig:
     bgp: BGPConfig = field(default_factory=BGPConfig)
     ospf: OSPFConfig = field(default_factory=OSPFConfig)
     ospf6: OSPF6Config = field(default_factory=OSPF6Config)
-    nat: NATConfig = field(default_factory=NATConfig)
     container: ContainerConfig = field(default_factory=ContainerConfig)
     cpu: CPUConfig = field(default_factory=CPUConfig)
     vlan_passthrough: list[VLANPassthrough] = field(default_factory=list)
     loopbacks: list[LoopbackInterface] = field(default_factory=list)
     bvi_domains: list[BVIConfig] = field(default_factory=list)
+    modules: list[dict] = field(default_factory=list)  # Module configs from router.json
 
 
 # =============================================================================
@@ -859,85 +876,6 @@ def phase5_bgp_config(external: ExternalInterface) -> BGPConfig:
     )
 
 
-def phase6_nat_config(internal: list[InternalInterface], container: ContainerConfig, bgp: BGPConfig) -> NATConfig:
-    """Phase 6: Configure NAT."""
-    log("Phase 6: NAT Configuration")
-
-    # NAT pool prefix
-    print()
-    print(f"  {Colors.BOLD}NAT Pool Prefix{Colors.NC}")
-    print("  This prefix covers your public NAT pool addresses (e.g., 23.177.24.96/29).")
-    print("  It's used for routing and can be larger than individual det44 pools.")
-    if bgp.enabled:
-        print("  This prefix will also be announced via BGP.")
-    print()
-    while True:
-        nat_prefix = input("  NAT pool prefix [CIDR]: ").strip()
-        if validate_ipv4_cidr(nat_prefix):
-            break
-        warn("Invalid IPv4 CIDR format")
-
-    # det44 mappings
-    print()
-    print(f"  {Colors.BOLD}NAT Pool Mappings{Colors.NC}")
-    print("  Define det44 mappings: which internal networks map to which NAT pools.")
-    print("  The NAT pools should be subsets of the prefix above.")
-    print("  Example: 192.168.20.0/24 -> 23.177.24.96/30")
-    print()
-
-    mappings = []
-
-    # Collect internal network mappings
-    for iface in internal:
-        print(f"  Internal interface {iface.vpp_name} ({iface.network}):")
-        while True:
-            pool = input(f"    NAT pool for {iface.network} [CIDR]: ").strip()
-            if validate_ipv4_cidr(pool):
-                break
-            warn("Invalid IPv4 CIDR format")
-        mappings.append(NATMapping(source_network=iface.network, nat_pool=pool))
-
-    # Container network mapping
-    print(f"\n  Container network ({container.network}):")
-    while True:
-        pool = input(f"    NAT pool for {container.network} [CIDR]: ").strip()
-        if validate_ipv4_cidr(pool):
-            break
-        warn("Invalid IPv4 CIDR format")
-    mappings.append(NATMapping(source_network=container.network, nat_pool=pool))
-
-    # ACL bypass pairs
-    print()
-    print(f"  {Colors.BOLD}NAT Bypass Rules{Colors.NC}")
-    print("  Define source/destination pairs that should skip NAT (direct routing).")
-    print("  Example: traffic from 192.168.20.0/24 to 192.168.37.0/24 goes directly.")
-    print()
-
-    bypass_pairs = []
-    if prompt_yes_no("Add NAT bypass rules?", default=False):
-        while True:
-            print()
-            while True:
-                src = input("    Source network [CIDR]: ").strip()
-                if validate_ipv4_cidr(src):
-                    break
-                warn("Invalid IPv4 CIDR format")
-
-            while True:
-                dst = input("    Destination network [CIDR]: ").strip()
-                if validate_ipv4_cidr(dst):
-                    break
-                warn("Invalid IPv4 CIDR format")
-
-            bypass_pairs.append(ACLBypassPair(source=src, destination=dst))
-            info(f"Added bypass: {src} -> {dst}")
-
-            if not prompt_yes_no("Add another bypass rule?", default=False):
-                break
-
-    return NATConfig(bgp_prefix=nat_prefix, mappings=mappings, bypass_pairs=bypass_pairs)
-
-
 def phase_vlan_passthrough(internal: list[InternalInterface]) -> list[VLANPassthrough]:
     """Configure VLAN pass-through (L2 cross-connect between external and internal)."""
     log("VLAN Pass-through Configuration (Optional)")
@@ -1311,15 +1249,13 @@ def phase7_confirm(config: RouterConfig) -> bool:
         print(f"  Static routing (gateway: {config.external.ipv4_gateway})")
 
     print()
-    print("NAT:")
-    print(f"  BGP Prefix: {config.nat.bgp_prefix}")
-    print("  Mappings:")
-    for m in config.nat.mappings:
-        print(f"    {m.source_network} -> {m.nat_pool}")
-    if config.nat.bypass_pairs:
-        print("  Bypass Rules:")
-        for bp in config.nat.bypass_pairs:
-            print(f"    {bp.source} -> {bp.destination}")
+    print("MODULES:")
+    if config.modules:
+        for mod in config.modules:
+            status = "enabled" if mod.get('enabled') else "disabled"
+            print(f"  {mod.get('name', 'unknown')}: [{status}]")
+    else:
+        print("  (none configured - use 'imp' REPL to add modules)")
 
     print()
     print("CONTAINERS:")
@@ -1395,6 +1331,31 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path,
     # Add custom test for substring matching (used in templates for IPv6 detection)
     env.tests['contains'] = lambda value, substring: substring in str(value)
 
+    # Load and prepare module instances
+    module_instances = []
+    if HAS_MODULE_LOADER and config.modules:
+        module_instances, errors = load_modules_from_config(config.modules)
+        if errors and not quiet:
+            for err in errors:
+                warn(f"Module warning: {err}")
+
+        # Render module commands using Jinja2
+        for module in module_instances:
+            if module.enabled and module.commands:
+                try:
+                    # Create a template from the module's commands
+                    cmd_template = env.from_string(module.commands)
+                    module.commands_rendered = cmd_template.render(
+                        module=module,
+                        external=config.external,
+                        internal=config.internal,
+                        container=config.container,
+                    )
+                except Exception as e:
+                    if not quiet:
+                        warn(f"Failed to render commands for module {module.name}: {e}")
+                    module.commands_rendered = f"# Error rendering commands: {e}"
+
     # Prepare template context
     context = {
         'hostname': config.hostname,
@@ -1404,20 +1365,18 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path,
         'bgp': config.bgp,
         'ospf': config.ospf,
         'ospf6': config.ospf6,
-        'nat': config.nat,
         'container': config.container,
         'cpu': config.cpu,
         'vlan_passthrough': config.vlan_passthrough,
         'loopbacks': config.loopbacks,
         'bvi_domains': config.bvi_domains,
+        'modules': module_instances,
     }
 
-    # Render each template
+    # Render core templates
     templates = [
         ("vpp/startup-core.conf.j2", "startup-core.conf"),
-        ("vpp/startup-nat.conf.j2", "startup-nat.conf"),
         ("vpp/commands-core.txt.j2", "commands-core.txt"),
-        ("vpp/commands-nat.txt.j2", "commands-nat.txt"),
         ("frr/frr.conf.j2", "frr.conf"),
         ("systemd/netns-move-interfaces.service.j2", "netns-move-interfaces.service"),
         ("systemd/management.network.j2", "10-management.network"),
@@ -1437,6 +1396,40 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path,
         except Exception as e:
             fatal(f"Failed to render {template_path}: {e}")
 
+    # Render per-module templates
+    for module in module_instances:
+        if not module.enabled:
+            continue
+
+        module_context = {'module': module, **context}
+
+        # Module startup config
+        try:
+            template = env.get_template("vpp/startup-module.conf.j2")
+            rendered = template.render(**module_context)
+            (output_dir / f"startup-{module.name}.conf").write_text(rendered)
+        except Exception as e:
+            if not quiet:
+                warn(f"Failed to render startup config for {module.name}: {e}")
+
+        # Module commands
+        try:
+            template = env.get_template("vpp/commands-module.txt.j2")
+            rendered = template.render(**module_context)
+            (output_dir / f"commands-{module.name}.txt").write_text(rendered)
+        except Exception as e:
+            if not quiet:
+                warn(f"Failed to render commands for {module.name}: {e}")
+
+        # Module systemd service
+        try:
+            template = env.get_template("systemd/vpp-module.service.j2")
+            rendered = template.render(**module_context)
+            (output_dir / f"vpp-{module.name}.service").write_text(rendered)
+        except Exception as e:
+            if not quiet:
+                warn(f"Failed to render service for {module.name}: {e}")
+
     # Make scripts executable
     for script in ["vpp-core-config.sh", "incus-networking.sh", "incus-init.sh"]:
         (output_dir / script).chmod(0o755)
@@ -1452,11 +1445,10 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path,
 def apply_configs(output_dir: Path, quiet: bool = False) -> None:
     """Copy generated configs to system locations."""
 
+    # Core config files
     copies = [
         ("startup-core.conf", "/etc/vpp/startup-core.conf"),
-        ("startup-nat.conf", "/etc/vpp/startup-nat.conf"),
         ("commands-core.txt", "/etc/vpp/commands-core.txt"),
-        ("commands-nat.txt", "/etc/vpp/commands-nat.txt"),
         ("frr.conf", "/etc/frr/frr.conf"),
         ("netns-move-interfaces.service", "/etc/systemd/system/netns-move-interfaces.service"),
         ("10-management.network", "/etc/systemd/network/10-management.network"),
@@ -1472,6 +1464,24 @@ def apply_configs(output_dir: Path, quiet: bool = False) -> None:
         # Create parent directory if needed
         dst_path.parent.mkdir(parents=True, exist_ok=True)
 
+        if src_path.exists():
+            shutil.copy2(src_path, dst_path)
+
+    # Copy module configs dynamically
+    # VPP startup and command files for modules
+    for src_path in output_dir.glob("startup-*.conf"):
+        if src_path.name != "startup-core.conf":
+            dst_path = Path("/etc/vpp") / src_path.name
+            shutil.copy2(src_path, dst_path)
+
+    for src_path in output_dir.glob("commands-*.txt"):
+        if src_path.name != "commands-core.txt":
+            dst_path = Path("/etc/vpp") / src_path.name
+            shutil.copy2(src_path, dst_path)
+
+    # Module systemd services
+    for src_path in output_dir.glob("vpp-*.service"):
+        dst_path = Path("/etc/systemd/system") / src_path.name
         shutil.copy2(src_path, dst_path)
 
     # Fix FRR permissions
@@ -1489,13 +1499,13 @@ def enable_services() -> None:
     """Enable all required services."""
     log("Enabling services...")
 
+    # Core services
     services = [
         "systemd-networkd",
         "netns-dataplane",
         "netns-move-interfaces",
         "vpp-core",
         "vpp-core-config",
-        "vpp-nat",
         "frr",
         "incus-init",
         "incus-dataplane",
@@ -1503,6 +1513,15 @@ def enable_services() -> None:
 
     for service in services:
         subprocess.run(["systemctl", "enable", service], check=False)
+
+    # Enable module services dynamically (find vpp-*.service in /etc/systemd/system)
+    systemd_dir = Path("/etc/systemd/system")
+    for service_file in systemd_dir.glob("vpp-*.service"):
+        # Skip vpp-core* services (already enabled above)
+        if service_file.name.startswith("vpp-core"):
+            continue
+        service_name = service_file.stem
+        subprocess.run(["systemctl", "enable", service_name], check=False)
 
     log("Services enabled")
 
@@ -1534,13 +1553,23 @@ def load_config(config_file: Path) -> RouterConfig:
     with open(config_file) as f:
         data = json.load(f)
 
-    # Reconstruct dataclasses
-    nat_data = data['nat']
-    nat = NATConfig(
-        bgp_prefix=nat_data.get('bgp_prefix', ''),
-        mappings=[NATMapping(**m) for m in nat_data.get('mappings', [])],
-        bypass_pairs=[ACLBypassPair(**bp) for bp in nat_data.get('bypass_pairs', [])]
-    )
+    # Load modules (new format) or migrate from old nat config
+    modules = data.get('modules', [])
+
+    # Backwards compatibility: migrate old 'nat' config to modules format
+    if 'nat' in data and not modules:
+        nat_data = data['nat']
+        if nat_data.get('bgp_prefix') or nat_data.get('mappings'):
+            warn("Migrating old NAT config to modules format")
+            modules = [{
+                'name': 'nat',
+                'enabled': True,
+                'config': {
+                    'bgp_prefix': nat_data.get('bgp_prefix', ''),
+                    'mappings': nat_data.get('mappings', []),
+                    'bypass_pairs': nat_data.get('bypass_pairs', []),
+                }
+            }]
 
     # Handle VLAN passthrough
     vlan_passthrough = [
@@ -1645,12 +1674,12 @@ def load_config(config_file: Path) -> RouterConfig:
         bgp=bgp,
         ospf=ospf,
         ospf6=ospf6,
-        nat=nat,
         container=ContainerConfig(**data['container']),
         cpu=cpu,
         vlan_passthrough=vlan_passthrough,
         loopbacks=loopbacks,
         bvi_domains=bvi_domains,
+        modules=modules,
     )
 
     return config
@@ -1736,33 +1765,29 @@ def main() -> None:
         container = ContainerConfig.from_network(net, gw)
 
     bgp = phase5_bgp_config(external)
-    nat = phase6_nat_config(internal, container, bgp)
     vlan_passthrough = phase_vlan_passthrough(internal)
     loopbacks = phase_loopback_config()
     bvi_domains = phase_bvi_config(internal)
 
     # Build config object
+    # Note: Modules (NAT, etc.) are configured via 'imp' REPL after initial setup
     config = RouterConfig(
         hostname=socket.gethostname(),
         management=management,
         external=external,
         internal=internal,
         bgp=bgp,
-        nat=nat,
         container=container,
         cpu=CPUConfig.detect_and_allocate(),
         vlan_passthrough=vlan_passthrough,
         loopbacks=loopbacks,
         bvi_domains=bvi_domains,
+        modules=[],  # Configure modules via 'imp' REPL
     )
 
     # Show CPU allocation
     info(f"CPU allocation ({config.cpu.total_cores} cores detected):")
     info(f"  VPP Core: main={config.cpu.core_main}, workers={config.cpu.core_workers or 'none'}")
-    if config.cpu.nat_main > 0:
-        info(f"  VPP NAT:  main={config.cpu.nat_main}, workers={config.cpu.nat_workers or 'none'}")
-    else:
-        info(f"  VPP NAT:  using software threads (no dedicated cores)")
 
     if not phase7_confirm(config):
         fatal("Configuration cancelled")
