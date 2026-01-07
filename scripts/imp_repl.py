@@ -26,10 +26,11 @@ except ImportError:
     print("ERROR: prompt_toolkit is required. Install with: apt install python3-prompt-toolkit")
     sys.exit(1)
 
-# Import configuration classes from configure-router
-# Also add script directory for imports
+# Add paths for imports:
+# - Script directory (for local development)
+# - Python local site-packages (for imp_lib package in production)
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, '/usr/local/bin')
+sys.path.insert(0, '/usr/local/lib/python3/dist-packages')
 
 # Import shared utilities from imp_lib
 from imp_lib.common import Colors, log, warn, error, info
@@ -109,44 +110,37 @@ from imp_lib.repl.commands import (
     cmd_snapshot_list, cmd_snapshot_create, cmd_snapshot_delete,
     cmd_snapshot_export, cmd_snapshot_import, cmd_snapshot_rollback,
 )
+# Import configuration dataclasses from imp_lib.config
+from imp_lib.config import (
+    RouterConfig, Interface, InterfaceAddress, Route, ManagementInterface,
+    SubInterface, LoopbackInterface, BVIConfig, BridgeDomainMember,
+    VLANPassthrough, BGPConfig, BGPPeer, OSPFConfig, OSPF6Config,
+    ContainerConfig, CPUConfig,
+    validate_ipv4, validate_ipv4_cidr, validate_ipv6, validate_ipv6_cidr,
+    parse_cidr, save_config, load_config,
+    TEMPLATE_DIR, CONFIG_FILE, GENERATED_DIR
+)
+
+# Import template rendering from configure_router (still there for apply command)
 try:
-    from configure_router import (
-        RouterConfig, Interface, InterfaceAddress, Route, ManagementInterface,
-        SubInterface, LoopbackInterface, BVIConfig, BridgeDomainMember,
-        VLANPassthrough, BGPConfig, BGPPeer, OSPFConfig, OSPF6Config,
-        ContainerConfig, CPUConfig,
-        validate_ipv4, validate_ipv4_cidr, validate_ipv6, validate_ipv6_cidr,
-        parse_cidr, render_templates, apply_configs, save_config, load_config,
-        TEMPLATE_DIR, CONFIG_FILE, GENERATED_DIR
-    )
+    from configure_router import render_templates, apply_configs
     CONFIG_AVAILABLE = True
 except ImportError:
-    # Fallback for development/testing without full install
-    CONFIG_FILE = Path("/persistent/config/router.json")
-    TEMPLATE_DIR = Path("/etc/imp/templates")
-    GENERATED_DIR = Path("/tmp/imp-generated-config")
     CONFIG_AVAILABLE = False
 
-# Import module system
-try:
-    from module_loader import (
-        list_available_modules,
-        list_example_modules,
-        install_module_from_example,
-        load_module_definition,
-        ensure_modules_dir,
-        MODULE_DEFINITIONS_DIR,
-        MODULE_EXAMPLES_DIR,
-        ModuleCommand,
-        ModuleCommandParam,
-    )
-    MODULE_LOADER_AVAILABLE = True
-except ImportError:
-    MODULE_LOADER_AVAILABLE = False
-    MODULE_DEFINITIONS_DIR = Path("/persistent/config/modules")
-    MODULE_EXAMPLES_DIR = Path("/usr/share/imp/module-examples")
-    ModuleCommand = None
-    ModuleCommandParam = None
+# Import module system from imp_lib
+from imp_lib.modules import (
+    list_available_modules,
+    list_example_modules,
+    install_module_from_example,
+    load_module_definition,
+    ensure_modules_dir,
+    MODULE_DEFINITIONS_DIR,
+    MODULE_EXAMPLES_DIR,
+    ModuleCommand,
+    ModuleCommandParam,
+)
+MODULE_LOADER_AVAILABLE = True
 
 
 # =============================================================================

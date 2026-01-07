@@ -10,28 +10,14 @@ from pathlib import Path
 from imp_lib.common import log, warn, error, info
 
 # Import module system
-try:
-    from module_loader import (
-        list_available_modules,
-        list_example_modules,
-        install_module_from_example,
-        MODULE_DEFINITIONS_DIR,
-        MODULE_EXAMPLES_DIR,
-    )
-    MODULE_LOADER_AVAILABLE = True
-except ImportError:
-    MODULE_LOADER_AVAILABLE = False
-    MODULE_DEFINITIONS_DIR = Path("/persistent/config/modules")
-    MODULE_EXAMPLES_DIR = Path("/usr/share/imp/module-examples")
-
-    def list_available_modules():
-        return []
-
-    def list_example_modules():
-        return []
-
-    def install_module_from_example(name):
-        raise FileNotFoundError()
+from imp_lib.modules import (
+    list_available_modules,
+    list_example_modules,
+    install_module_from_example,
+    MODULE_DEFINITIONS_DIR,
+    MODULE_EXAMPLES_DIR,
+)
+MODULE_LOADER_AVAILABLE = True
 
 
 def cmd_modules_available(ctx, args: list[str]) -> None:

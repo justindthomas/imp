@@ -256,14 +256,11 @@ def tool_get_vlan_passthrough(config) -> str:
 
 def tool_list_modules(config) -> str:
     """List available IMP VPP modules and their status."""
-    try:
-        from module_loader import (
-            list_available_modules,
-            list_example_modules,
-            load_module_definition,
-        )
-    except ImportError:
-        return "Error: module_loader not available"
+    from imp_lib.modules import (
+        list_available_modules,
+        list_example_modules,
+        load_module_definition,
+    )
 
     lines = ["IMP VPP Modules:"]
 
@@ -361,10 +358,7 @@ def tool_get_module_config(config, module_name: str) -> str:
 
 def tool_execute_module_command(config, ctx, module_name: str, command_path: str, params: dict = None) -> str:
     """Execute a command defined by an IMP VPP module."""
-    try:
-        from module_loader import load_module_definition
-    except ImportError:
-        return "Error: module_loader not available"
+    from imp_lib.modules import load_module_definition
 
     if not config:
         return "No configuration loaded"

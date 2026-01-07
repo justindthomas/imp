@@ -5,7 +5,6 @@ This module contains tools that modify configuration data.
 """
 
 import ipaddress
-import sys
 
 
 # =============================================================================
@@ -13,25 +12,21 @@ import sys
 # =============================================================================
 
 def _get_config_classes():
-    """Lazy import of config classes."""
-    sys.path.insert(0, '/usr/local/bin')
-    try:
-        from configure_router import (
-            SubInterface, LoopbackInterface, Route,
-            VLANPassthrough, BGPPeer, validate_ipv4_cidr, validate_ipv6_cidr, parse_cidr
-        )
-        return {
-            'SubInterface': SubInterface,
-            'LoopbackInterface': LoopbackInterface,
-            'Route': Route,
-            'VLANPassthrough': VLANPassthrough,
-            'BGPPeer': BGPPeer,
-            'validate_ipv4_cidr': validate_ipv4_cidr,
-            'validate_ipv6_cidr': validate_ipv6_cidr,
-            'parse_cidr': parse_cidr,
-        }
-    except ImportError:
-        return None
+    """Get config classes from imp_lib.config."""
+    from imp_lib.config import (
+        SubInterface, LoopbackInterface, Route,
+        VLANPassthrough, BGPPeer, validate_ipv4_cidr, validate_ipv6_cidr, parse_cidr
+    )
+    return {
+        'SubInterface': SubInterface,
+        'LoopbackInterface': LoopbackInterface,
+        'Route': Route,
+        'VLANPassthrough': VLANPassthrough,
+        'BGPPeer': BGPPeer,
+        'validate_ipv4_cidr': validate_ipv4_cidr,
+        'validate_ipv6_cidr': validate_ipv6_cidr,
+        'parse_cidr': parse_cidr,
+    }
 
 
 def _get_parent_interface(config, interface: str):

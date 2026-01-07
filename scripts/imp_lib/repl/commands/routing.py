@@ -7,16 +7,7 @@ This module contains commands for configuring BGP and OSPF routing protocols.
 from imp_lib.common import Colors, log, warn, error, info
 from .crud import prompt_value, prompt_yes_no
 
-# Import from configure_router if available
-try:
-    from configure_router import validate_ipv4, validate_ipv6, BGPPeer
-    CONFIG_AVAILABLE = True
-except ImportError:
-    CONFIG_AVAILABLE = False
-    def validate_ipv4(v):
-        return True
-    def validate_ipv6(v):
-        return True
+from imp_lib.config import validate_ipv4, validate_ipv6, BGPPeer
 
 
 # =============================================================================

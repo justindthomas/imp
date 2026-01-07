@@ -12,16 +12,11 @@ from typing import Optional
 
 from imp_lib.common import Colors, log, warn, error
 
-# Import from configure_router if available
-try:
-    from configure_router import (
-        LoopbackInterface, BVIConfig, BridgeDomainMember,
-        VLANPassthrough, SubInterface,
-        validate_ipv4_cidr, validate_ipv6_cidr, parse_cidr
-    )
-    CONFIG_AVAILABLE = True
-except ImportError:
-    CONFIG_AVAILABLE = False
+from imp_lib.config import (
+    LoopbackInterface, BVIConfig, BridgeDomainMember,
+    VLANPassthrough, SubInterface,
+    validate_ipv4_cidr, validate_ipv6_cidr, parse_cidr
+)
 
 
 def prompt_value(prompt: str, validator=None, required: bool = True, default: str = None) -> Optional[str]:

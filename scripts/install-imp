@@ -634,15 +634,19 @@ EOF
     ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure-router"
     ln -sf configure-router.py "$ROOTFS/usr/local/bin/configure_router.py"
 
-    # Install imp CLI, REPL, Agent, and module loader
+    # Install imp CLI, REPL, and Agent
+    # Note: module_loader is now part of imp_lib.modules package
     cp "$SCRIPT_DIR/imp" "$ROOTFS/usr/local/bin/"
     cp "$SCRIPT_DIR/imp_repl.py" "$ROOTFS/usr/local/bin/"
     cp "$SCRIPT_DIR/imp_agent.py" "$ROOTFS/usr/local/bin/"
-    cp "$SCRIPT_DIR/module_loader.py" "$ROOTFS/usr/local/bin/"
     chmod +x "$ROOTFS/usr/local/bin/imp"
     chmod +x "$ROOTFS/usr/local/bin/imp_repl.py"
     chmod +x "$ROOTFS/usr/local/bin/imp_agent.py"
-    chmod +x "$ROOTFS/usr/local/bin/module_loader.py"
+
+    # Install imp_lib package to Python site-packages
+    local PYTHON_SITEPKG="$ROOTFS/usr/local/lib/python3/dist-packages"
+    mkdir -p "$PYTHON_SITEPKG"
+    cp -r "$SCRIPT_DIR/imp_lib" "$PYTHON_SITEPKG/"
 
     # Install module examples (templates for users to copy and customize)
     mkdir -p "$ROOTFS/usr/share/imp/module-examples"

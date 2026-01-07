@@ -9,14 +9,7 @@ from imp_lib.common import Colors, log, warn, error
 from imp_lib.repl.display import get_nat_config
 from .crud import prompt_value, prompt_yes_no
 
-# Import from configure_router if available
-try:
-    from configure_router import validate_ipv4_cidr
-    CONFIG_AVAILABLE = True
-except ImportError:
-    CONFIG_AVAILABLE = False
-    def validate_ipv4_cidr(v):
-        return True
+from imp_lib.config import validate_ipv4_cidr
 
 
 def find_module(config, name: str):

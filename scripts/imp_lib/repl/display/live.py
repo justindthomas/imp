@@ -16,12 +16,9 @@ from typing import Optional
 from imp_lib.common import Colors, error
 from imp_lib.common.vpp import vpp_exec
 
-# Try to import module loader for show module commands
-try:
-    from module_loader import load_module_definition
-    MODULE_LOADER_AVAILABLE = True
-except ImportError:
-    MODULE_LOADER_AVAILABLE = False
+# Import module loader for show module commands
+from imp_lib.modules import load_module_definition
+MODULE_LOADER_AVAILABLE = True
 
 # Config file path for reading module config
 CONFIG_FILE = Path("/persistent/config/router.json")

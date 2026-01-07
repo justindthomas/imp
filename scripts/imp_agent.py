@@ -11,9 +11,11 @@ This is now a thin wrapper that imports from imp_lib.agent.
 import sys
 from pathlib import Path
 
-# Add script directory to path for imports
+# Add paths for imports:
+# - Script directory (for local development)
+# - Python local site-packages (for imp_lib package in production)
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, '/usr/local/bin')
+sys.path.insert(0, '/usr/local/lib/python3/dist-packages')
 
 # Re-export everything from imp_lib.agent for backward compatibility
 from imp_lib.agent import (
