@@ -18,10 +18,11 @@ ipv6 route {{ prefix }} {{ conn.module_ip }} memif-{{ module.name }}-{{ adv.via_
 {% endif %}
 {% endfor %}
 {% endfor %}
-{% for iface in internal %}
-{% if iface.ipv6 %}
-ipv6 route {{ iface.ipv6_network }} blackhole
-{% endif %}
+{# Blackhole routes for interface IPv6 networks (for BGP announcement) #}
+{% for iface in interfaces %}
+{% for network in iface.ipv6_networks %}
+ipv6 route {{ network }} blackhole
+{% endfor %}
 {% endfor %}
 !
 {% if bgp.enabled %}
@@ -37,9 +38,17 @@ router bgp {{ bgp.asn }}
 {% if peer.update_source %}
  neighbor {{ peer.peer_ip }} update-source {{ peer.update_source }}
 {% elif ':' in peer.peer_ip %}
- neighbor {{ peer.peer_ip }} update-source {{ external.ipv6 }}
+{# For IPv6 peers, use first interface with IPv6 #}
+{% for iface in interfaces if iface.ipv6 %}
+ neighbor {{ peer.peer_ip }} update-source {{ iface.ipv6[0].address }}
+{% break %}
+{% endfor %}
 {% else %}
- neighbor {{ peer.peer_ip }} update-source {{ external.ipv4 }}
+{# For IPv4 peers, use first interface with IPv4 #}
+{% for iface in interfaces if iface.ipv4 %}
+ neighbor {{ peer.peer_ip }} update-source {{ iface.ipv4[0].address }}
+{% break %}
+{% endfor %}
 {% endif %}
 {% endfor %}
  !
@@ -65,10 +74,11 @@ router bgp {{ bgp.asn }}
 {% if has_ipv6_peers %}
  !
  address-family ipv6 unicast
-{% for iface in internal %}
-{% if iface.ipv6 %}
-  network {{ iface.ipv6_network }}
-{% endif %}
+{# Announce interface IPv6 networks #}
+{% for iface in interfaces %}
+{% for network in iface.ipv6_networks %}
+  network {{ network }}
+{% endfor %}
 {% endfor %}
 {# Announce IPv6 prefixes from modules with routing.advertise #}
 {% for module in modules if module.enabled and module.routing and module.routing.advertise %}
@@ -101,9 +111,11 @@ ip prefix-list LOCAL-ROUTES seq {{ seq.num }} permit {{ lb.ipv4 }}/{{ lb.ipv4_pr
 {% set seq.num = seq.num + 10 %}
 {% endif %}
 {% endfor %}
-{% for iface in internal %}
-ip prefix-list LOCAL-ROUTES seq {{ seq.num }} permit {{ iface.network }}
+{% for iface in interfaces %}
+{% for network in iface.networks %}
+ip prefix-list LOCAL-ROUTES seq {{ seq.num }} permit {{ network }}
 {% set seq.num = seq.num + 10 %}
+{% endfor %}
 {% endfor %}
 {% for bvi in bvi_domains %}
 {% if bvi.ipv4 %}
@@ -132,25 +144,18 @@ router ospf
  network {{ lb.ipv4 }}/32 area {{ lb.ospf_area }}
 {% endif %}
 {% endfor %}
-{# Internal interfaces #}
-{% for iface in internal %}
+{# Dataplane interfaces #}
+{% for iface in interfaces %}
 {% if iface.ospf_area is not none %}
- network {{ iface.network }} area {{ iface.ospf_area }}
+{% for network in iface.networks %}
+ network {{ network }} area {{ iface.ospf_area }}
+{% endfor %}
 {% endif %}
 {% for sub in iface.subinterfaces %}
 {% if sub.ospf_area is not none and sub.ipv4 %}
  network {{ sub.ipv4 }}/{{ sub.ipv4_prefix }} area {{ sub.ospf_area }}
 {% endif %}
 {% endfor %}
-{% endfor %}
-{# External interface #}
-{% if external.ospf_area is not none %}
- network {{ external.ipv4 }}/{{ external.ipv4_prefix }} area {{ external.ospf_area }}
-{% endif %}
-{% for sub in external.subinterfaces %}
-{% if sub.ospf_area is not none and sub.ipv4 %}
- network {{ sub.ipv4 }}/{{ sub.ipv4_prefix }} area {{ sub.ospf_area }}
-{% endif %}
 {% endfor %}
 {# BVI interfaces #}
 {% for bvi in bvi_domains %}
@@ -161,33 +166,24 @@ router ospf
 {# Passive interfaces - loopbacks #}
 {% for lb in loopbacks %}
 {% if lb.ospf_passive and lb.create_lcp %}
- passive-interface loop{{ lb.instance }}
+ passive-interface lo{{ lb.instance }}
 {% endif %}
 {% endfor %}
-{# Passive interfaces - internal #}
-{% for iface in internal %}
+{# Passive interfaces - dataplane #}
+{% for iface in interfaces %}
 {% if iface.ospf_passive %}
- passive-interface {{ iface.vpp_name }}
+ passive-interface {{ iface.name }}
 {% endif %}
 {% for sub in iface.subinterfaces %}
 {% if sub.ospf_passive %}
- passive-interface {{ iface.vpp_name }}.{{ sub.vlan_id }}
+ passive-interface {{ iface.name }}.{{ sub.vlan_id }}
 {% endif %}
 {% endfor %}
-{% endfor %}
-{# Passive interfaces - external #}
-{% if external.ospf_passive %}
- passive-interface external
-{% endif %}
-{% for sub in external.subinterfaces %}
-{% if sub.ospf_passive %}
- passive-interface external.{{ sub.vlan_id }}
-{% endif %}
 {% endfor %}
 {# Passive interfaces - BVI #}
 {% for bvi in bvi_domains %}
 {% if bvi.ospf_passive and bvi.create_lcp %}
- passive-interface loop{{ bvi.bridge_id }}
+ passive-interface bvi{{ bvi.bridge_id }}
 {% endif %}
 {% endfor %}
 exit
@@ -202,11 +198,11 @@ ipv6 prefix-list LOCAL-ROUTES6 seq {{ seq6.num }} permit {{ lb.ipv6 }}/{{ lb.ipv
 {% set seq6.num = seq6.num + 10 %}
 {% endif %}
 {% endfor %}
-{% for iface in internal %}
-{% if iface.ipv6 %}
-ipv6 prefix-list LOCAL-ROUTES6 seq {{ seq6.num }} permit {{ iface.ipv6_network }}
+{% for iface in interfaces %}
+{% for network in iface.ipv6_networks %}
+ipv6 prefix-list LOCAL-ROUTES6 seq {{ seq6.num }} permit {{ network }}
 {% set seq6.num = seq6.num + 10 %}
-{% endif %}
+{% endfor %}
 {% endfor %}
 {% for bvi in bvi_domains %}
 {% if bvi.ipv6 %}
@@ -230,7 +226,7 @@ exit
 {# OSPFv3 interface-level area assignment #}
 {% for lb in loopbacks %}
 {% if lb.ospf6_area is not none and lb.ipv6 and lb.create_lcp %}
-interface loop{{ lb.instance }}
+interface lo{{ lb.instance }}
  ipv6 ospf6 area {{ lb.ospf6_area }}
 {% if lb.ospf6_passive %}
  ipv6 ospf6 passive
@@ -239,9 +235,9 @@ exit
 !
 {% endif %}
 {% endfor %}
-{% for iface in internal %}
+{% for iface in interfaces %}
 {% if iface.ospf6_area is not none and iface.ipv6 %}
-interface {{ iface.vpp_name }}
+interface {{ iface.name }}
  ipv6 ospf6 area {{ iface.ospf6_area }}
 {% if iface.ospf6_passive %}
  ipv6 ospf6 passive
@@ -251,7 +247,7 @@ exit
 {% endif %}
 {% for sub in iface.subinterfaces %}
 {% if sub.ospf6_area is not none and sub.ipv6 %}
-interface {{ iface.vpp_name }}.{{ sub.vlan_id }}
+interface {{ iface.name }}.{{ sub.vlan_id }}
  ipv6 ospf6 area {{ sub.ospf6_area }}
 {% if sub.ospf6_passive %}
  ipv6 ospf6 passive
@@ -260,30 +256,10 @@ exit
 !
 {% endif %}
 {% endfor %}
-{% endfor %}
-{% if external.ospf6_area is not none and external.ipv6 %}
-interface external
- ipv6 ospf6 area {{ external.ospf6_area }}
-{% if external.ospf6_passive %}
- ipv6 ospf6 passive
-{% endif %}
-exit
-!
-{% endif %}
-{% for sub in external.subinterfaces %}
-{% if sub.ospf6_area is not none and sub.ipv6 %}
-interface external.{{ sub.vlan_id }}
- ipv6 ospf6 area {{ sub.ospf6_area }}
-{% if sub.ospf6_passive %}
- ipv6 ospf6 passive
-{% endif %}
-exit
-!
-{% endif %}
 {% endfor %}
 {% for bvi in bvi_domains %}
 {% if bvi.ospf6_area is not none and bvi.ipv6 and bvi.create_lcp %}
-interface loop{{ bvi.bridge_id }}
+interface bvi{{ bvi.bridge_id }}
  ipv6 ospf6 area {{ bvi.ospf6_area }}
 {% if bvi.ospf6_passive %}
  ipv6 ospf6 passive

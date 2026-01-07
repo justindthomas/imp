@@ -160,57 +160,75 @@ class BVIConfig:
 
 
 @dataclass
-class ExternalInterface:
-    """External (WAN) interface configuration."""
-    iface: str
-    pci: str
-    ipv4: str
-    ipv4_prefix: int
-    ipv4_gateway: str
-    ipv6: Optional[str] = None
-    ipv6_prefix: Optional[int] = None
-    ipv6_gateway: Optional[str] = None
-    subinterfaces: list[SubInterface] = field(default_factory=list)
-    # OSPF settings
-    ospf_area: Optional[int] = None  # OSPF area (None = not participating)
-    ospf_passive: bool = False  # Passive interface (no hellos)
-    ospf6_area: Optional[int] = None  # OSPFv3 area (None = not participating)
-    ospf6_passive: bool = False  # Passive for OSPFv3
+class InterfaceAddress:
+    """A single IP address on an interface."""
+    address: str           # IP address (e.g., "192.168.1.1")
+    prefix: int            # Prefix length (e.g., 24)
 
 
 @dataclass
-class InternalInterface:
-    """Internal (LAN) interface configuration."""
-    iface: str
-    pci: str
-    vpp_name: str
-    ipv4: str
-    ipv4_prefix: int
-    network: str = ""  # Computed: network address
-    ipv6: Optional[str] = None
-    ipv6_prefix: Optional[int] = None
-    ipv6_network: Optional[str] = None  # Computed: network for BGP announcement
-    ipv6_ra_prefix: Optional[str] = None  # Computed: RA prefix (typically /64)
+class Interface:
+    """A dataplane interface with user-defined name."""
+    name: str              # User-defined name (e.g., "wan", "lan", "transit")
+    iface: str             # Physical interface name (e.g., "eth0")
+    pci: str               # PCI address for DPDK binding
+
+    # IP configuration (multiple addresses supported)
+    ipv4: list[InterfaceAddress] = field(default_factory=list)
+    ipv6: list[InterfaceAddress] = field(default_factory=list)
+
+    # Link configuration
+    mtu: int = 1500
+
+    # VLAN sub-interfaces
     subinterfaces: list[SubInterface] = field(default_factory=list)
-    # OSPF settings
-    ospf_area: Optional[int] = None  # OSPF area (None = not participating)
-    ospf_passive: bool = False  # Passive interface (no hellos)
-    ospf6_area: Optional[int] = None  # OSPFv3 area (None = not participating)
-    ospf6_passive: bool = False  # Passive for OSPFv3
 
-    def __post_init__(self):
-        # Compute network address from IP
-        net = ipaddress.IPv4Network(f"{self.ipv4}/{self.ipv4_prefix}", strict=False)
-        self.network = str(net)
+    # OSPF (optional)
+    ospf_area: Optional[int] = None
+    ospf_passive: bool = False
+    ospf6_area: Optional[int] = None
+    ospf6_passive: bool = False
 
-        if self.ipv6 and self.ipv6_prefix:
-            net6 = ipaddress.IPv6Network(f"{self.ipv6}/{self.ipv6_prefix}", strict=False)
-            self.ipv6_network = str(net6)
-            # RA prefix - use /64 from the address
-            addr6 = ipaddress.IPv6Address(self.ipv6)
-            # Get the /64 network
+    @property
+    def vpp_name(self) -> str:
+        """VPP interface name is the user-defined name."""
+        return self.name
+
+    @property
+    def networks(self) -> list[str]:
+        """Compute networks from IPv4 addresses (for ACL/NAT rules)."""
+        result = []
+        for addr in self.ipv4:
+            net = ipaddress.IPv4Network(f"{addr.address}/{addr.prefix}", strict=False)
+            result.append(str(net))
+        return result
+
+    @property
+    def ipv6_networks(self) -> list[str]:
+        """Compute networks from IPv6 addresses."""
+        result = []
+        for addr in self.ipv6:
+            net = ipaddress.IPv6Network(f"{addr.address}/{addr.prefix}", strict=False)
+            result.append(str(net))
+        return result
+
+    @property
+    def ipv6_ra_prefixes(self) -> list[str]:
+        """Compute /64 RA prefixes from IPv6 addresses."""
+        result = []
+        for addr in self.ipv6:
+            addr6 = ipaddress.IPv6Address(addr.address)
             net64 = ipaddress.IPv6Network(f"{addr6}/64", strict=False)
-            self.ipv6_ra_prefix = str(net64)
+            result.append(str(net64))
+        return result
+
+
+@dataclass
+class Route:
+    """A static route."""
+    destination: str       # CIDR (e.g., "0.0.0.0/0" or "10.0.0.0/8")
+    via: str               # Next-hop IP address
+    interface: Optional[str] = None  # Optional: force via specific interface
 
 
 @dataclass
@@ -416,8 +434,8 @@ class RouterConfig:
     """Complete router configuration."""
     hostname: str = "appliance"
     management: Optional[ManagementInterface] = None
-    external: Optional[ExternalInterface] = None
-    internal: list[InternalInterface] = field(default_factory=list)
+    interfaces: list[Interface] = field(default_factory=list)  # All dataplane interfaces
+    routes: list[Route] = field(default_factory=list)  # Static routes (including defaults)
     bgp: BGPConfig = field(default_factory=BGPConfig)
     ospf: OSPFConfig = field(default_factory=OSPFConfig)
     ospf6: OSPF6Config = field(default_factory=OSPF6Config)
@@ -685,9 +703,9 @@ def phase1_detect_interfaces() -> list[InterfaceInfo]:
     return interfaces
 
 
-def phase2_assign_roles(interfaces: list[InterfaceInfo]) -> tuple[InterfaceInfo, InterfaceInfo, list[InterfaceInfo]]:
-    """Phase 2: Assign interface roles. Returns (management, external, internal[])."""
-    log("Phase 2: Interface Role Assignment")
+def phase2_select_interfaces(interfaces: list[InterfaceInfo]) -> tuple[InterfaceInfo, list[InterfaceInfo]]:
+    """Phase 2: Select management and dataplane interfaces. Returns (management, dataplane[])."""
+    log("Phase 2: Interface Selection")
 
     available = list(interfaces)
     names = [i.name for i in available]
@@ -700,97 +718,85 @@ def phase2_assign_roles(interfaces: list[InterfaceInfo]) -> tuple[InterfaceInfo,
     management = available.pop(idx)
     names = [i.name for i in available]
 
-    if len(available) < 2:
-        fatal("Need at least 2 more interfaces for external and internal roles")
+    if len(available) < 1:
+        fatal("Need at least 1 more interface for the dataplane")
 
-    # External interface
-    print(f"\n{Colors.BOLD}External interface (WAN/Upstream){Colors.NC}")
-    print("  This interface connects to the upstream provider.")
-    print("  It will be managed by VPP with DPDK.")
-    idx = prompt_select("Select EXTERNAL interface:", names)
-    external = available.pop(idx)
-    names = [i.name for i in available]
+    # Dataplane interfaces
+    print(f"\n{Colors.BOLD}Dataplane interfaces{Colors.NC}")
+    print("  These interfaces will be managed by VPP with DPDK.")
+    print("  You can configure their roles (wan, lan, etc.) in the next step.")
 
-    # Internal interfaces
-    print(f"\n{Colors.BOLD}Internal interface(s) (LAN/Downstream){Colors.NC}")
-    print("  These interfaces connect to internal networks.")
-    print("  Multiple internal interfaces are supported.")
-
-    internal = []
+    dataplane = []
     while available:
-        idx = prompt_select(f"Select INTERNAL interface #{len(internal) + 1}:", names)
-        internal.append(available.pop(idx))
+        idx = prompt_select(f"Select dataplane interface #{len(dataplane) + 1}:", names)
+        dataplane.append(available.pop(idx))
         names = [i.name for i in available]
 
         if available:
-            if not prompt_yes_no("Add another internal interface?"):
+            if not prompt_yes_no("Add another dataplane interface?"):
                 break
 
     # Summary
-    print(f"\n{Colors.BOLD}Interface Assignment Summary:{Colors.NC}")
+    print(f"\n{Colors.BOLD}Interface Selection Summary:{Colors.NC}")
     print(f"  Management: {management.name}")
-    print(f"  External:   {external.name} (PCI: {external.pci})")
-    for i, iface in enumerate(internal):
-        print(f"  Internal:   {iface.name} (PCI: {iface.pci}) -> internal{i}")
+    for iface in dataplane:
+        print(f"  Dataplane:  {iface.name} (PCI: {iface.pci})")
 
-    return management, external, internal
+    return management, dataplane
 
 
-def phase3_ip_config(external_iface: InterfaceInfo, internal_ifaces: list[InterfaceInfo]) -> tuple[ExternalInterface, list[InternalInterface]]:
-    """Phase 3: Collect IP configuration."""
-    log("Phase 3: IP Configuration")
+def phase3_interface_config(dataplane_ifaces: list[InterfaceInfo]) -> list[Interface]:
+    """Phase 3: Configure interfaces (minimal - name + one IPv4)."""
+    log("Phase 3: Interface Configuration")
 
-    # External interface
-    print(f"\n{Colors.BOLD}Configure EXTERNAL interface ({external_iface.name}):{Colors.NC}")
+    interfaces = []
+    for iface_info in dataplane_ifaces:
+        print(f"\n{Colors.BOLD}Configure interface: {iface_info.name}{Colors.NC}")
 
-    ipv4, prefix = prompt_ipv4_cidr("IPv4 Address")
-    gateway = prompt_ipv4("IPv4 Gateway")
-    ipv6, ipv6_prefix = prompt_ipv6_cidr("IPv6 Address")
+        # Get user-defined name
+        default_name = iface_info.name
+        name_input = input(f"  Name (e.g., wan, lan, transit) [{default_name}]: ").strip()
+        name = name_input if name_input else default_name
 
-    ipv6_gateway = None
-    if ipv6:
-        ipv6_gateway = prompt_ipv6("IPv6 Gateway")
+        # Validate name is unique
+        while any(i.name == name for i in interfaces):
+            warn(f"Name '{name}' is already used")
+            name = prompt_string("  Name (must be unique)")
 
-    # Sub-interfaces for external
-    external_subifs = configure_subinterfaces(external_iface.name, "external")
-
-    external = ExternalInterface(
-        iface=external_iface.name,
-        pci=external_iface.pci,
-        ipv4=ipv4,
-        ipv4_prefix=prefix,
-        ipv4_gateway=gateway,
-        ipv6=ipv6,
-        ipv6_prefix=ipv6_prefix,
-        ipv6_gateway=ipv6_gateway,
-        subinterfaces=external_subifs
-    )
-
-    # Internal interfaces
-    internal = []
-    for i, iface in enumerate(internal_ifaces):
-        print(f"\n{Colors.BOLD}Configure INTERNAL interface #{i+1} ({iface.name}):{Colors.NC}")
-
+        # Get IPv4 address (required for minimal setup)
         ipv4, prefix = prompt_ipv4_cidr("IPv4 Address")
-        ipv6, ipv6_prefix = prompt_ipv6_cidr("IPv6 Address")
 
-        vpp_name = f"internal{i}"
-
-        # Sub-interfaces for this internal interface
-        internal_subifs = configure_subinterfaces(iface.name, vpp_name)
-
-        internal.append(InternalInterface(
-            iface=iface.name,
-            pci=iface.pci,
-            vpp_name=vpp_name,
-            ipv4=ipv4,
-            ipv4_prefix=prefix,
-            ipv6=ipv6,
-            ipv6_prefix=ipv6_prefix,
-            subinterfaces=internal_subifs
+        interfaces.append(Interface(
+            name=name,
+            iface=iface_info.name,
+            pci=iface_info.pci,
+            ipv4=[InterfaceAddress(address=ipv4, prefix=prefix)],
+            ipv6=[],
+            mtu=1500,
         ))
 
-    return external, internal
+        info(f"Added interface: {name} ({iface_info.name}) with {ipv4}/{prefix}")
+
+    return interfaces
+
+
+def phase4_route_config() -> list[Route]:
+    """Phase 4: Configure default routes."""
+    log("Phase 4: Route Configuration")
+
+    routes = []
+
+    # Default IPv4 gateway
+    print(f"\n{Colors.BOLD}Default Routes{Colors.NC}")
+    gateway_v4 = prompt_ipv4("Default IPv4 gateway")
+    routes.append(Route(destination="0.0.0.0/0", via=gateway_v4))
+
+    # Optional IPv6 default gateway
+    gateway_v6 = prompt_ipv6("Default IPv6 gateway")
+    if gateway_v6:
+        routes.append(Route(destination="::/0", via=gateway_v6))
+
+    return routes
 
 
 def phase4_management_config(mgmt_iface: InterfaceInfo) -> ManagementInterface:
@@ -818,20 +824,28 @@ def phase4_management_config(mgmt_iface: InterfaceInfo) -> ManagementInterface:
     )
 
 
-def phase5_bgp_config(external: ExternalInterface) -> BGPConfig:
-    """Phase 5: Configure BGP (optional)."""
-    log("Phase 5: BGP Configuration (Optional)")
+def phase_bgp_config(interfaces: list[Interface]) -> BGPConfig:
+    """Configure BGP (optional). Can be used from REPL."""
+    log("BGP Configuration")
 
     if not prompt_yes_no("Enable BGP routing?"):
-        info("BGP disabled. Static default routes will be used.")
+        info("BGP disabled.")
         return BGPConfig(enabled=False)
 
     asn = prompt_int("  Local AS Number", min_val=1, max_val=4294967295)
 
-    router_id = external.ipv4
-    user_id = input(f"  Router ID [{router_id}]: ").strip()
-    if user_id and validate_ipv4(user_id):
-        router_id = user_id
+    # Default router-id to first interface's first IPv4 address
+    default_router_id = None
+    for iface in interfaces:
+        if iface.ipv4:
+            default_router_id = iface.ipv4[0].address
+            break
+
+    if default_router_id:
+        user_id = input(f"  Router ID [{default_router_id}]: ").strip()
+        router_id = user_id if user_id and validate_ipv4(user_id) else default_router_id
+    else:
+        router_id = prompt_ipv4("Router ID")
 
     # Collect BGP peers
     peers = []
@@ -876,21 +890,21 @@ def phase5_bgp_config(external: ExternalInterface) -> BGPConfig:
     )
 
 
-def phase_vlan_passthrough(internal: list[InternalInterface]) -> list[VLANPassthrough]:
-    """Configure VLAN pass-through (L2 cross-connect between external and internal)."""
+def phase_vlan_passthrough(interfaces: list[Interface]) -> list[VLANPassthrough]:
+    """Configure VLAN pass-through (L2 cross-connect between interfaces)."""
     log("VLAN Pass-through Configuration (Optional)")
 
     print()
     print("  VLAN pass-through allows L2 traffic on specific VLANs to pass")
-    print("  directly between the external and internal interfaces.")
+    print("  directly between interfaces (e.g., external to internal).")
     print("  This is useful for passing customer VLANs, QinQ traffic, etc.")
     print()
 
     if not prompt_yes_no("Configure VLAN pass-through?", default=False):
         return []
 
-    # Build list of internal interface names
-    internal_names = [iface.vpp_name for iface in internal]
+    # Build list of interface names
+    interface_names = [iface.name for iface in interfaces]
 
     vlans = []
     while True:
@@ -919,28 +933,28 @@ def phase_vlan_passthrough(internal: list[InternalInterface]) -> list[VLANPassth
         if vlan_type_idx == 2:
             inner_vlan = prompt_int("  Inner VLAN ID (C-tag)", min_val=1, max_val=4094)
 
-        # Select internal interface
-        if len(internal_names) == 1:
-            internal_iface = internal_names[0]
-            info(f"Using internal interface: {internal_iface}")
+        # Select target interface
+        if len(interface_names) == 1:
+            target_iface = interface_names[0]
+            info(f"Using interface: {target_iface}")
         else:
-            idx = prompt_select("Select internal interface:", internal_names)
-            internal_iface = internal_names[idx]
+            idx = prompt_select("Select target interface:", interface_names)
+            target_iface = interface_names[idx]
 
         vlans.append(VLANPassthrough(
             vlan_id=vlan_id,
-            internal_interface=internal_iface,
+            internal_interface=target_iface,  # Field name kept for compatibility
             vlan_type=vlan_type,
             inner_vlan=inner_vlan
         ))
 
         # Show what was added
         if inner_vlan:
-            info(f"Added: VLAN {vlan_id}.{inner_vlan} (QinQ) <-> {internal_iface}")
+            info(f"Added: VLAN {vlan_id}.{inner_vlan} (QinQ) <-> {target_iface}")
         elif vlan_type == "dot1ad":
-            info(f"Added: S-VLAN {vlan_id} (QinQ, all C-tags) <-> {internal_iface}")
+            info(f"Added: S-VLAN {vlan_id} (QinQ, all C-tags) <-> {target_iface}")
         else:
-            info(f"Added: VLAN {vlan_id} (802.1Q) <-> {internal_iface}")
+            info(f"Added: VLAN {vlan_id} (802.1Q) <-> {target_iface}")
 
         if not prompt_yes_no("Add another VLAN pass-through?", default=False):
             break
@@ -1080,7 +1094,7 @@ def phase_loopback_config() -> list[LoopbackInterface]:
     return loopbacks
 
 
-def phase_bvi_config(internal: list[InternalInterface]) -> list[BVIConfig]:
+def phase_bvi_config(interfaces: list[Interface]) -> list[BVIConfig]:
     """Configure BVI (Bridge Virtual Interface) domains - switch-like VLAN interfaces."""
     log("BVI Configuration (Optional)")
 
@@ -1095,7 +1109,7 @@ def phase_bvi_config(internal: list[InternalInterface]) -> list[BVIConfig]:
         return []
 
     # Build list of available interfaces for bridge membership
-    available_interfaces = ["external"] + [iface.vpp_name for iface in internal]
+    available_interfaces = [iface.name for iface in interfaces]
 
     bvi_domains = []
     bridge_id = 100  # Start bridge domain IDs at 100 to avoid conflicts
@@ -1201,9 +1215,9 @@ def phase_bvi_config(internal: list[InternalInterface]) -> list[BVIConfig]:
     return bvi_domains
 
 
-def phase7_confirm(config: RouterConfig) -> bool:
-    """Phase 7: Show summary and confirm."""
-    log("Phase 7: Configuration Summary")
+def phase_confirm(config: RouterConfig) -> bool:
+    """Show summary and confirm."""
+    log("Configuration Summary")
 
     print()
     print("=" * 50)
@@ -1212,21 +1226,14 @@ def phase7_confirm(config: RouterConfig) -> bool:
     print()
     print("INTERFACES:")
     print(f"  Management: {config.management.iface} ({config.management.mode})")
-    print(f"  External:   {config.external.iface} -> {config.external.ipv4}/{config.external.ipv4_prefix}")
-    if config.external.ipv6:
-        print(f"              {config.external.ipv6}/{config.external.ipv6_prefix}")
-    for sub in config.external.subinterfaces:
-        sub_ips = []
-        if sub.ipv4:
-            sub_ips.append(f"{sub.ipv4}/{sub.ipv4_prefix}")
-        if sub.ipv6:
-            sub_ips.append(f"{sub.ipv6}/{sub.ipv6_prefix}")
-        lcp_note = " (LCP)" if sub.create_lcp else ""
-        print(f"    .{sub.vlan_id}: {', '.join(sub_ips)}{lcp_note}")
-    for iface in config.internal:
-        print(f"  Internal:   {iface.iface} -> {iface.ipv4}/{iface.ipv4_prefix}")
-        if iface.ipv6:
-            print(f"              {iface.ipv6}/{iface.ipv6_prefix}")
+    for iface in config.interfaces:
+        ipv4_str = ", ".join(f"{a.address}/{a.prefix}" for a in iface.ipv4) if iface.ipv4 else "none"
+        ipv6_str = ", ".join(f"{a.address}/{a.prefix}" for a in iface.ipv6) if iface.ipv6 else ""
+        print(f"  {iface.name}: {iface.iface} -> {ipv4_str}")
+        if ipv6_str:
+            print(f"    {' ' * len(iface.name)}  IPv6: {ipv6_str}")
+        if iface.mtu != 1500:
+            print(f"    {' ' * len(iface.name)}  MTU: {iface.mtu}")
         for sub in iface.subinterfaces:
             sub_ips = []
             if sub.ipv4:
@@ -1237,7 +1244,13 @@ def phase7_confirm(config: RouterConfig) -> bool:
             print(f"    .{sub.vlan_id}: {', '.join(sub_ips)}{lcp_note}")
 
     print()
-    print("ROUTING:")
+    print("ROUTES:")
+    for route in config.routes:
+        iface_note = f" via {route.interface}" if route.interface else ""
+        print(f"  {route.destination} -> {route.via}{iface_note}")
+
+    print()
+    print("ROUTING PROTOCOLS:")
     if config.bgp.enabled:
         print(f"  BGP AS:     {config.bgp.asn}")
         print(f"  Router ID:  {config.bgp.router_id}")
@@ -1246,7 +1259,7 @@ def phase7_confirm(config: RouterConfig) -> bool:
             af = "IPv6" if ':' in peer.peer_ip else "IPv4"
             print(f"    {peer.name}: {peer.peer_ip} AS {peer.peer_asn} ({af})")
     else:
-        print(f"  Static routing (gateway: {config.external.ipv4_gateway})")
+        print("  (none configured - use 'imp' REPL to enable BGP/OSPF)")
 
     print()
     print("MODULES:")
@@ -1347,8 +1360,8 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path,
                     cmd_template = env.from_string(module.vpp_commands)
                     module.vpp_commands_rendered = cmd_template.render(
                         module=module,
-                        external=config.external,
-                        internal=config.internal,
+                        interfaces=config.interfaces,
+                        routes=config.routes,
                         container=config.container,
                     )
                 except Exception as e:
@@ -1360,8 +1373,8 @@ def render_templates(config: RouterConfig, template_dir: Path, output_dir: Path,
     context = {
         'hostname': config.hostname,
         'management': config.management,
-        'external': config.external,
-        'internal': config.internal,
+        'interfaces': config.interfaces,
+        'routes': config.routes,
         'bgp': config.bgp,
         'ospf': config.ospf,
         'ospf6': config.ospf6,
@@ -1553,23 +1566,31 @@ def load_config(config_file: Path) -> RouterConfig:
     with open(config_file) as f:
         data = json.load(f)
 
-    # Load modules (new format) or migrate from old nat config
+    # Load modules
     modules = data.get('modules', [])
 
-    # Backwards compatibility: migrate old 'nat' config to modules format
-    if 'nat' in data and not modules:
-        nat_data = data['nat']
-        if nat_data.get('bgp_prefix') or nat_data.get('mappings'):
-            warn("Migrating old NAT config to modules format")
-            modules = [{
-                'name': 'nat',
-                'enabled': True,
-                'config': {
-                    'bgp_prefix': nat_data.get('bgp_prefix', ''),
-                    'mappings': nat_data.get('mappings', []),
-                    'bypass_pairs': nat_data.get('bypass_pairs', []),
-                }
-            }]
+    # Load interfaces (new format)
+    interfaces = []
+    for iface_data in data.get('interfaces', []):
+        ipv4_addrs = [InterfaceAddress(**a) for a in iface_data.get('ipv4', [])]
+        ipv6_addrs = [InterfaceAddress(**a) for a in iface_data.get('ipv6', [])]
+        subifs = [SubInterface(**s) for s in iface_data.get('subinterfaces', [])]
+        interfaces.append(Interface(
+            name=iface_data['name'],
+            iface=iface_data['iface'],
+            pci=iface_data['pci'],
+            ipv4=ipv4_addrs,
+            ipv6=ipv6_addrs,
+            mtu=iface_data.get('mtu', 1500),
+            subinterfaces=subifs,
+            ospf_area=iface_data.get('ospf_area'),
+            ospf_passive=iface_data.get('ospf_passive', False),
+            ospf6_area=iface_data.get('ospf6_area'),
+            ospf6_passive=iface_data.get('ospf6_passive', False),
+        ))
+
+    # Load routes
+    routes = [Route(**r) for r in data.get('routes', [])]
 
     # Handle VLAN passthrough
     vlan_passthrough = [
@@ -1603,45 +1624,7 @@ def load_config(config_file: Path) -> RouterConfig:
     # Always re-detect CPU allocation for current hardware
     cpu = CPUConfig.detect_and_allocate()
 
-    # Reconstruct external interface with subinterfaces
-    ext_data = data['external']
-    ext_subifs = [SubInterface(**s) for s in ext_data.get('subinterfaces', [])]
-    external = ExternalInterface(
-        iface=ext_data['iface'],
-        pci=ext_data['pci'],
-        ipv4=ext_data['ipv4'],
-        ipv4_prefix=ext_data['ipv4_prefix'],
-        ipv4_gateway=ext_data['ipv4_gateway'],
-        ipv6=ext_data.get('ipv6'),
-        ipv6_prefix=ext_data.get('ipv6_prefix'),
-        ipv6_gateway=ext_data.get('ipv6_gateway'),
-        subinterfaces=ext_subifs,
-        ospf_area=ext_data.get('ospf_area'),
-        ospf_passive=ext_data.get('ospf_passive', False),
-        ospf6_area=ext_data.get('ospf6_area'),
-        ospf6_passive=ext_data.get('ospf6_passive', False),
-    )
-
-    # Reconstruct internal interfaces with subinterfaces
-    internal = []
-    for i_data in data['internal']:
-        int_subifs = [SubInterface(**s) for s in i_data.get('subinterfaces', [])]
-        internal.append(InternalInterface(
-            iface=i_data['iface'],
-            pci=i_data['pci'],
-            vpp_name=i_data['vpp_name'],
-            ipv4=i_data['ipv4'],
-            ipv4_prefix=i_data['ipv4_prefix'],
-            ipv6=i_data.get('ipv6'),
-            ipv6_prefix=i_data.get('ipv6_prefix'),
-            subinterfaces=int_subifs,
-            ospf_area=i_data.get('ospf_area'),
-            ospf_passive=i_data.get('ospf_passive', False),
-            ospf6_area=i_data.get('ospf6_area'),
-            ospf6_passive=i_data.get('ospf6_passive', False),
-        ))
-
-    # Handle OSPF configs (may not exist in older configs)
+    # Handle OSPF configs
     ospf_data = data.get('ospf', {})
     ospf = OSPFConfig(
         enabled=ospf_data.get('enabled', False),
@@ -1669,8 +1652,8 @@ def load_config(config_file: Path) -> RouterConfig:
     config = RouterConfig(
         hostname=data.get('hostname', 'appliance'),
         management=ManagementInterface(**data['management']),
-        external=external,
-        internal=internal,
+        interfaces=interfaces,
+        routes=routes,
         bgp=bgp,
         ospf=ospf,
         ospf6=ospf6,
@@ -1738,17 +1721,18 @@ def main() -> None:
             config = load_config(args.config_file)
             log("Configuration loaded")
 
-            if phase7_confirm(config):
+            if phase_confirm(config):
                 render_templates(config, args.template_dir, GENERATED_DIR)
                 apply_configs(GENERATED_DIR)
                 enable_services()
                 log("Configuration complete!")
             return
 
-    # Interactive configuration
-    interfaces = phase1_detect_interfaces()
-    mgmt_iface, ext_iface, int_ifaces = phase2_assign_roles(interfaces)
-    external, internal = phase3_ip_config(ext_iface, int_ifaces)
+    # Interactive configuration (minimal wizard)
+    detected_interfaces = phase1_detect_interfaces()
+    mgmt_iface, dataplane_ifaces = phase2_select_interfaces(detected_interfaces)
+    interfaces = phase3_interface_config(dataplane_ifaces)
+    routes = phase4_route_config()
     management = phase4_management_config(mgmt_iface)
 
     # Container defaults
@@ -1764,24 +1748,15 @@ def main() -> None:
         gw = prompt_ipv4("Container Gateway IP")
         container = ContainerConfig.from_network(net, gw)
 
-    bgp = phase5_bgp_config(external)
-    vlan_passthrough = phase_vlan_passthrough(internal)
-    loopbacks = phase_loopback_config()
-    bvi_domains = phase_bvi_config(internal)
-
     # Build config object
-    # Note: Modules (NAT, etc.) are configured via 'imp' REPL after initial setup
+    # Note: BGP, OSPF, NAT, etc. are configured via 'imp' REPL after initial setup
     config = RouterConfig(
         hostname=socket.gethostname(),
         management=management,
-        external=external,
-        internal=internal,
-        bgp=bgp,
+        interfaces=interfaces,
+        routes=routes,
         container=container,
         cpu=CPUConfig.detect_and_allocate(),
-        vlan_passthrough=vlan_passthrough,
-        loopbacks=loopbacks,
-        bvi_domains=bvi_domains,
         modules=[],  # Configure modules via 'imp' REPL
     )
 
@@ -1789,7 +1764,7 @@ def main() -> None:
     info(f"CPU allocation ({config.cpu.total_cores} cores detected):")
     info(f"  VPP Core: main={config.cpu.core_main}, workers={config.cpu.core_workers or 'none'}")
 
-    if not phase7_confirm(config):
+    if not phase_confirm(config):
         fatal("Configuration cancelled")
 
     render_templates(config, args.template_dir, GENERATED_DIR)

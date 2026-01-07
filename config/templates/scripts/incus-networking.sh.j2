@@ -25,8 +25,8 @@ $CMD set int ip address host-incus-dataplane {{ container.ipv6 }}/{{ container.i
 
 # ACL to steer container traffic to NAT
 $CMD set acl-plugin acl deny src {{ container.network }} dst 192.168.0.0/16, deny src {{ container.network }} dst 172.16.0.0/12, deny src {{ container.network }} dst 10.0.0.0/8, permit src {{ container.network }}
-$CMD abf policy add id {{ internal | length }} acl {{ internal | length }} via 169.254.1.5 memif1/0
-$CMD abf attach ip4 policy {{ internal | length }} host-incus-dataplane
+$CMD abf policy add id {{ interfaces | length }} acl {{ interfaces | length }} via 169.254.1.5 memif1/0
+$CMD abf attach ip4 policy {{ interfaces | length }} host-incus-dataplane
 
 sleep 15
 

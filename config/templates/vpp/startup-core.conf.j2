@@ -33,12 +33,9 @@ cpu {
 }
 
 dpdk {
-  dev {{ external.pci }} {
-    name external
-  }
-{% for iface in internal %}
+{% for iface in interfaces %}
   dev {{ iface.pci }} {
-    name {{ iface.vpp_name }}
+    name {{ iface.name }}
   }
 {% endfor %}
 }

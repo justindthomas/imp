@@ -26,6 +26,9 @@ cpu:
 
 # Configuration schema (what fields can be set in router.json)
 config_schema:
+  source_interfaces:
+    type: array
+    description: "List of interface names whose traffic should be NATed"
   bgp_prefix:
     type: string
     format: ipv4_cidr
@@ -54,8 +57,8 @@ show_commands:
     description: "Show det44 interface configuration"
 
 # ABF rules: how core steers traffic to this module
+# source_interfaces is configured in router.json module config
 abf:
-  source: internal_interfaces  # Apply to all internal interfaces
   exclude:
     - container_network        # Don't NAT container traffic
     - bypass_pairs             # Respect bypass rules from config
@@ -119,6 +122,27 @@ commands:
     target: bypass_pairs
     format: "{source} -> {destination}"
 
+  # Source interfaces management
+  - path: source/add
+    description: "Add an interface as NAT source"
+    action: array_append
+    target: source_interfaces
+    params:
+      - name: interface
+        type: string
+        prompt: "Interface name (e.g., lan)"
+
+  - path: source/delete
+    description: "Remove an interface from NAT sources"
+    action: array_remove
+    target: source_interfaces
+
+  - path: source/list
+    description: "List NAT source interfaces"
+    action: array_list
+    target: source_interfaces
+    format: "{}"
+
   # BGP prefix
   - path: set-prefix
     description: "Set the BGP announcement prefix"
@@ -135,7 +159,7 @@ commands:
     target: ""
 
 # VPP commands (Jinja2 template rendered with module context)
-# Available variables: module.connections, module.config, external, internal, container, etc.
+# Available variables: module.connections, module.config, interfaces, routes, container, etc.
 vpp_commands: |
   det44 plugin enable
   {% set int_conn = module.connections | selectattr('name', 'eq', 'internal') | first %}

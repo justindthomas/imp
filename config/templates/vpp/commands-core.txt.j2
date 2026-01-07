@@ -4,57 +4,33 @@
 lcp lcp-sync on
 lcp lcp-auto-subint on
 
-# External interface
-lcp create external host-if external
-set interface state external up
-set interface ip address external {{ external.ipv4 }}/{{ external.ipv4_prefix }}
-{% if external.ipv6 %}
-set interface ip address external {{ external.ipv6 }}/{{ external.ipv6_prefix }}
-{% endif %}
-set interface mtu 1500 external
-{% if external.subinterfaces %}
-
-# External sub-interfaces (L3 VLAN termination)
-{% for sub in external.subinterfaces %}
-create sub-interfaces external {{ sub.vlan_id }}
-set interface state external.{{ sub.vlan_id }} up
-{% if sub.create_lcp %}
-{# Create LCP BEFORE IPs so linux_cp syncs addresses to Linux #}
-lcp create external.{{ sub.vlan_id }} host-if ext-v{{ sub.vlan_id }}
-{% endif %}
-{% if sub.ipv4 %}
-set interface ip address external.{{ sub.vlan_id }} {{ sub.ipv4 }}/{{ sub.ipv4_prefix }}
-{% endif %}
-{% if sub.ipv6 %}
-set interface ip address external.{{ sub.vlan_id }} {{ sub.ipv6 }}/{{ sub.ipv6_prefix }}
-{% endif %}
+# Dataplane interfaces
+{% for iface in interfaces %}
+# Interface: {{ iface.name }} ({{ iface.iface }})
+lcp create {{ iface.name }} host-if {{ iface.name }}
+set interface state {{ iface.name }} up
+{% for addr in iface.ipv4 %}
+set interface ip address {{ iface.name }} {{ addr.address }}/{{ addr.prefix }}
 {% endfor %}
-{% endif %}
-
-# Internal interfaces
-{% for iface in internal %}
-lcp create {{ iface.vpp_name }} host-if {{ iface.vpp_name }}
-set interface state {{ iface.vpp_name }} up
-set interface ip address {{ iface.vpp_name }} {{ iface.ipv4 }}/{{ iface.ipv4_prefix }}
-{% if iface.ipv6 %}
-set interface ip address {{ iface.vpp_name }} {{ iface.ipv6 }}/{{ iface.ipv6_prefix }}
-{% endif %}
-set interface mtu 1500 {{ iface.vpp_name }}
+{% for addr in iface.ipv6 %}
+set interface ip address {{ iface.name }} {{ addr.address }}/{{ addr.prefix }}
+{% endfor %}
+set interface mtu {{ iface.mtu }} {{ iface.name }}
 {% if iface.subinterfaces %}
 
-# {{ iface.vpp_name }} sub-interfaces (L3 VLAN termination)
+# {{ iface.name }} sub-interfaces (L3 VLAN termination)
 {% for sub in iface.subinterfaces %}
-create sub-interfaces {{ iface.vpp_name }} {{ sub.vlan_id }}
-set interface state {{ iface.vpp_name }}.{{ sub.vlan_id }} up
+create sub-interfaces {{ iface.name }} {{ sub.vlan_id }}
+set interface state {{ iface.name }}.{{ sub.vlan_id }} up
 {% if sub.create_lcp %}
 {# Create LCP BEFORE IPs so linux_cp syncs addresses to Linux #}
-lcp create {{ iface.vpp_name }}.{{ sub.vlan_id }} host-if {{ iface.vpp_name }}-v{{ sub.vlan_id }}
+lcp create {{ iface.name }}.{{ sub.vlan_id }} host-if {{ iface.name }}-v{{ sub.vlan_id }}
 {% endif %}
 {% if sub.ipv4 %}
-set interface ip address {{ iface.vpp_name }}.{{ sub.vlan_id }} {{ sub.ipv4 }}/{{ sub.ipv4_prefix }}
+set interface ip address {{ iface.name }}.{{ sub.vlan_id }} {{ sub.ipv4 }}/{{ sub.ipv4_prefix }}
 {% endif %}
 {% if sub.ipv6 %}
-set interface ip address {{ iface.vpp_name }}.{{ sub.vlan_id }} {{ sub.ipv6 }}/{{ sub.ipv6_prefix }}
+set interface ip address {{ iface.name }}.{{ sub.vlan_id }} {{ sub.ipv6 }}/{{ sub.ipv6_prefix }}
 {% endif %}
 {% endfor %}
 {% endif %}
@@ -126,23 +102,28 @@ set interface ip address memif{{ conn.socket_id }}/0 {{ conn.core_ip }}/{{ conn.
 # Dynamic ABF for modules
 {% set abf_id = namespace(value=0) %}
 {% for module in modules if module.enabled and module.abf %}
-{% if module.abf.source == 'internal_interfaces' %}
-# ABF rules for {{ module.name }}: steering internal traffic to module
-{% for iface in internal %}
+{% if module.config.source_interfaces is defined and module.config.source_interfaces %}
+# ABF rules for {{ module.name }}: steering traffic from specified interfaces
+{% for iface_name in module.config.source_interfaces %}
+{% set iface = interfaces | selectattr('name', 'eq', iface_name) | first %}
+{% if iface %}
+{% for network in iface.networks %}
 {# Build ACL: deny excludes, permit source network #}
-set acl-plugin acl {% for excl in module.abf.exclude %}{% if excl == 'container_network' %}deny src {{ iface.network }} dst {{ container.network }}, {% elif excl == 'bypass_pairs' %}{% for bp in module.config.bypass_pairs %}deny src {{ bp.source }} dst {{ bp.destination }}, {% endfor %}{% endif %}{% endfor %}permit src {{ iface.network }}
+set acl-plugin acl {% for excl in module.abf.exclude %}{% if excl == 'container_network' %}deny src {{ network }} dst {{ container.network }}, {% elif excl == 'bypass_pairs' %}{% for bp in module.config.bypass_pairs %}deny src {{ bp.source }} dst {{ bp.destination }}, {% endfor %}{% endif %}{% endfor %}permit src {{ network }}
 {% set target_conn = module.connections | selectattr('name', 'eq', 'internal') | first %}
 abf policy add id {{ abf_id.value }} acl {{ abf_id.value }} via {{ target_conn.module_ip }} memif{{ target_conn.socket_id }}/0
-abf attach ip4 policy {{ abf_id.value }} {{ iface.vpp_name }}
+abf attach ip4 policy {{ abf_id.value }} {{ iface.name }}
 {% set abf_id.value = abf_id.value + 1 %}
+{% endfor %}
+{% endif %}
 {% endfor %}
 {% elif module.abf.match == 'destination_prefix' %}
 # ABF rules for {{ module.name }}: match destination prefix
 set acl-plugin acl permit dst {{ module.config[module.abf.prefix_field] }}
 {% set target_conn = module.connections | first %}
 abf policy add id {{ abf_id.value }} acl {{ abf_id.value }} via {{ target_conn.module_ip }} memif{{ target_conn.socket_id }}/0
-{% for iface in internal %}
-abf attach ip6 policy {{ abf_id.value }} {{ iface.vpp_name }}
+{% for iface in interfaces %}
+abf attach ip6 policy {{ abf_id.value }} {{ iface.name }}
 {% endfor %}
 {% set abf_id.value = abf_id.value + 1 %}
 {% endif %}
@@ -163,39 +144,43 @@ ip route add {{ module.config.bgp_prefix }} via {{ ext_conn.module_ip }} memif{{
 {% endfor %}
 {% endif %}
 
-# Default routes
-ip route add 0.0.0.0/0 via {{ external.ipv4_gateway }} external
-{% if external.ipv6_gateway %}
-ip route add ::/0 via {{ external.ipv6_gateway }} external
-{% endif %}
+# Static routes (including defaults)
+{% for route in routes %}
+ip route add {{ route.destination }} via {{ route.via }}{% if route.interface %} {{ route.interface }}{% endif %}
+
+{% endfor %}
 {% if vlan_passthrough %}
 
-# VLAN pass-through (L2 cross-connect between external and internal interfaces)
+# VLAN pass-through (L2 cross-connect between interfaces)
 {% for v in vlan_passthrough %}
 {% if v.inner_vlan %}
 # QinQ VLAN {{ v.vlan_id }}.{{ v.inner_vlan }} <-> {{ v.internal_interface }}
-create sub-interface external {{ v.vlan_id }} inner-dot1q {{ v.inner_vlan }}
+{# Note: internal_interface field name kept for compatibility #}
+{% set first_iface = interfaces | first %}
+create sub-interface {{ first_iface.name }} {{ v.vlan_id }} inner-dot1q {{ v.inner_vlan }}
 create sub-interface {{ v.internal_interface }} {{ v.vlan_id }} inner-dot1q {{ v.inner_vlan }}
-set interface state external.{{ v.vlan_id }}.{{ v.inner_vlan }} up
+set interface state {{ first_iface.name }}.{{ v.vlan_id }}.{{ v.inner_vlan }} up
 set interface state {{ v.internal_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }} up
-set interface l2 xconnect external.{{ v.vlan_id }}.{{ v.inner_vlan }} {{ v.internal_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }}
-set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }} external.{{ v.vlan_id }}.{{ v.inner_vlan }}
+set interface l2 xconnect {{ first_iface.name }}.{{ v.vlan_id }}.{{ v.inner_vlan }} {{ v.internal_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }}
+set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }} {{ first_iface.name }}.{{ v.vlan_id }}.{{ v.inner_vlan }}
 {% elif v.vlan_type == 'dot1ad' %}
 # QinQ S-VLAN {{ v.vlan_id }} (all C-tags) <-> {{ v.internal_interface }}
-create sub-interface external {{ v.vlan_id }} dot1ad
+{% set first_iface = interfaces | first %}
+create sub-interface {{ first_iface.name }} {{ v.vlan_id }} dot1ad
 create sub-interface {{ v.internal_interface }} {{ v.vlan_id }} dot1ad
-set interface state external.{{ v.vlan_id }} up
+set interface state {{ first_iface.name }}.{{ v.vlan_id }} up
 set interface state {{ v.internal_interface }}.{{ v.vlan_id }} up
-set interface l2 xconnect external.{{ v.vlan_id }} {{ v.internal_interface }}.{{ v.vlan_id }}
-set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }} external.{{ v.vlan_id }}
+set interface l2 xconnect {{ first_iface.name }}.{{ v.vlan_id }} {{ v.internal_interface }}.{{ v.vlan_id }}
+set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }} {{ first_iface.name }}.{{ v.vlan_id }}
 {% else %}
 # 802.1Q VLAN {{ v.vlan_id }} <-> {{ v.internal_interface }}
-create sub-interface external {{ v.vlan_id }}
+{% set first_iface = interfaces | first %}
+create sub-interface {{ first_iface.name }} {{ v.vlan_id }}
 create sub-interface {{ v.internal_interface }} {{ v.vlan_id }}
-set interface state external.{{ v.vlan_id }} up
+set interface state {{ first_iface.name }}.{{ v.vlan_id }} up
 set interface state {{ v.internal_interface }}.{{ v.vlan_id }} up
-set interface l2 xconnect external.{{ v.vlan_id }} {{ v.internal_interface }}.{{ v.vlan_id }}
-set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }} external.{{ v.vlan_id }}
+set interface l2 xconnect {{ first_iface.name }}.{{ v.vlan_id }} {{ v.internal_interface }}.{{ v.vlan_id }}
+set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }} {{ first_iface.name }}.{{ v.vlan_id }}
 {% endif %}
 {% endfor %}
 {% endif %}

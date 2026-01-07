@@ -150,12 +150,22 @@ vpp_commands: |                        # VPP commands (Jinja2)
 The `abf` field controls how core VPP steers traffic to the module.
 
 **Source-based (NAT-style):**
+Traffic steering is controlled by `source_interfaces` in the module config (router.json):
 ```yaml
 abf:
-  source: internal_interfaces    # Apply to all internal interfaces
   exclude:
     - container_network          # Don't match container traffic
     - bypass_pairs               # Respect configured bypasses
+```
+
+In router.json, specify which interfaces should have traffic sent to NAT:
+```json
+{
+  "name": "nat",
+  "config": {
+    "source_interfaces": ["lan", "servers"]
+  }
+}
 ```
 
 **Destination-based (NAT64-style):**

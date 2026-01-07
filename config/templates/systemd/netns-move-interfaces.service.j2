@@ -8,8 +8,7 @@ Type=oneshot
 RemainAfterExit=yes
 
 ExecStartPre=/usr/bin/echo "Moving interfaces to dataplane"
-ExecStart=/usr/sbin/ip link set {{ external.iface }} netns dataplane
-{% for iface in internal %}
+{% for iface in interfaces %}
 ExecStart=/usr/sbin/ip link set {{ iface.iface }} netns dataplane
 {% endfor %}
 

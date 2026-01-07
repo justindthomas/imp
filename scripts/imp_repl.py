@@ -627,18 +627,20 @@ class MenuCompleter(Completer):
                 completions.extend(menu["children"].keys())
 
         # Dynamic completions based on effective path
-        if effective_path == ["config", "interfaces", "internal"] and self.ctx.config:
-            # Add internal interface names
-            completions.extend(i.vpp_name for i in self.ctx.config.internal)
+        if effective_path == ["config", "interfaces"] and self.ctx.config:
+            # Add interface names from config (dynamic children)
+            completions.extend(i.name for i in self.ctx.config.interfaces)
 
-        if len(effective_path) == 4 and effective_path[:3] == ["config", "interfaces", "internal"]:
-            # Add subinterfaces submenu and OSPF commands for internal interfaces
-            completions.append("subinterfaces")
-            completions.extend(["show", "ospf", "ospf6"])
+        if len(effective_path) == 3 and effective_path[:2] == ["config", "interfaces"] and self.ctx.config:
+            # After selecting an interface name, show commands
+            iface_name = effective_path[2]
+            if iface_name not in ("management", "show", "list", "add"):
+                if any(i.name == iface_name for i in self.ctx.config.interfaces):
+                    completions.extend(["show", "set-ipv4", "set-ipv6", "set-mtu", "delete", "subinterfaces", "ospf", "ospf6"])
 
-        if effective_path == ["config", "interfaces", "external"]:
-            # Add OSPF commands for external interface
-            completions.extend(["ospf", "ospf6"])
+        # Routes menu
+        if effective_path == ["config", "routes"] and self.ctx.config:
+            completions.extend(["list", "add", "delete", "set-default-v4", "set-default-v6"])
 
         if len(effective_path) >= 4 and effective_path[-1] == "subinterfaces":
             # Add sub-interface commands
@@ -690,18 +692,12 @@ def build_menu_tree() -> dict:
                         "interfaces": {
                             "children": {
                                 "management": {"commands": ["show", "set-dhcp", "set-static"]},
-                                "external": {
-                                    "children": {
-                                        "subinterfaces": {"commands": ["list", "add", "edit", "delete"]},
-                                    },
-                                    "commands": ["show", "set"],
-                                },
-                                "internal": {
-                                    "commands": ["list"],
-                                    "dynamic": True,  # Children are generated from config
-                                },
                             },
-                            "commands": ["show"],
+                            "commands": ["show", "list", "add"],
+                            "dynamic": True,  # Interface names are generated from config
+                        },
+                        "routes": {
+                            "commands": ["list", "add", "delete", "set-default-v4", "set-default-v6"],
                         },
                         "loopbacks": {
                             "commands": ["list", "add", "edit", "delete"],
@@ -849,17 +845,18 @@ def cmd_show(ctx: MenuContext, args: list[str]) -> None:
         if config.management:
             print(f"  Management:  {config.management.iface} ({config.management.mode})")
 
-        if config.external:
-            ext = config.external
-            print(f"  External:    {ext.iface} -> {ext.ipv4}/{ext.ipv4_prefix}")
-            if ext.subinterfaces:
-                print(f"               + {len(ext.subinterfaces)} sub-interface(s)")
-
-        if config.internal:
-            for iface in config.internal:
-                print(f"  Internal:    {iface.iface} ({iface.vpp_name}) -> {iface.ipv4}/{iface.ipv4_prefix}")
+        if config.interfaces:
+            for iface in config.interfaces:
+                ipv4_str = ", ".join(f"{a.address}/{a.prefix}" for a in iface.ipv4) if iface.ipv4 else "none"
+                print(f"  {iface.name}: {iface.iface} -> {ipv4_str}")
                 if iface.subinterfaces:
-                    print(f"               + {len(iface.subinterfaces)} sub-interface(s)")
+                    print(f"    + {len(iface.subinterfaces)} sub-interface(s)")
+
+        if config.routes:
+            default_v4 = next((r for r in config.routes if r.destination == "0.0.0.0/0"), None)
+            default_v6 = next((r for r in config.routes if r.destination == "::/0"), None)
+            print(f"  Default v4:  {default_v4.via if default_v4 else 'none'}")
+            print(f"  Default v6:  {default_v6.via if default_v6 else 'none'}")
 
         if config.bgp.enabled:
             peer_count = len(config.bgp.peers)
@@ -881,26 +878,21 @@ def cmd_show(ctx: MenuContext, args: list[str]) -> None:
     elif path == ["interfaces"]:
         _show_interfaces(config)
 
-    elif path == ["interfaces", "external"]:
-        _show_external(config)
-
-    elif path == ["interfaces", "external", "subinterfaces"]:
-        _show_subinterfaces(config.external.subinterfaces if config.external else [], "external")
-
     elif path == ["interfaces", "management"]:
         _show_management(config)
 
-    elif path == ["interfaces", "internal"]:
-        _show_internal_list(config)
-
-    elif len(path) >= 3 and path[0] == "interfaces" and path[1] == "internal":
-        iface_name = path[2]
-        iface = next((i for i in config.internal if i.vpp_name == iface_name), None)
+    elif len(path) >= 2 and path[0] == "interfaces" and path[1] not in ("management",):
+        # Dynamic interface handling
+        iface_name = path[1]
+        iface = next((i for i in config.interfaces if i.name == iface_name), None)
         if iface:
-            if len(path) == 3:
-                _show_internal_detail(iface)
-            elif path[3] == "subinterfaces":
-                _show_subinterfaces(iface.subinterfaces, iface.vpp_name)
+            if len(path) == 2:
+                _show_interface_detail(iface)
+            elif len(path) >= 3 and path[2] == "subinterfaces":
+                _show_subinterfaces(iface.subinterfaces, iface.name)
+
+    elif path == ["routes"]:
+        _show_routes(config)
 
     elif path == ["loopbacks"]:
         _show_loopbacks(config)
@@ -1368,20 +1360,12 @@ def _show_interfaces(config) -> None:
         else:
             print(f"  management  {m.iface} -> {m.ipv4}/{m.ipv4_prefix}")
 
-    if config.external:
-        e = config.external
-        print(f"  external    {e.iface} -> {e.ipv4}/{e.ipv4_prefix}")
-        for sub in e.subinterfaces:
-            ips = []
-            if sub.ipv4:
-                ips.append(f"{sub.ipv4}/{sub.ipv4_prefix}")
-            if sub.ipv6:
-                ips.append(f"{sub.ipv6}/{sub.ipv6_prefix}")
-            lcp = " (LCP)" if sub.create_lcp else ""
-            print(f"    .{sub.vlan_id}: {', '.join(ips)}{lcp}")
-
-    for iface in config.internal:
-        print(f"  {iface.vpp_name:<10} {iface.iface} -> {iface.ipv4}/{iface.ipv4_prefix}")
+    for iface in config.interfaces:
+        ipv4_str = ", ".join(f"{a.address}/{a.prefix}" for a in iface.ipv4) if iface.ipv4 else "none"
+        mtu_str = f" MTU:{iface.mtu}" if iface.mtu != 1500 else ""
+        print(f"  {iface.name:<12} {iface.iface} -> {ipv4_str}{mtu_str}")
+        for addr in iface.ipv6:
+            print(f"               IPv6: {addr.address}/{addr.prefix}")
         for sub in iface.subinterfaces:
             ips = []
             if sub.ipv4:
@@ -1392,30 +1376,38 @@ def _show_interfaces(config) -> None:
             print(f"    .{sub.vlan_id}: {', '.join(ips)}{lcp}")
 
     print()
-
-
-def _show_external(config) -> None:
-    """Show external interface details."""
-    if not config.external:
-        warn("External interface not configured")
-        return
-
-    e = config.external
-    print(f"{Colors.BOLD}External Interface{Colors.NC}")
-    print("=" * 50)
-    print(f"  Physical:  {e.iface}")
-    print(f"  PCI:       {e.pci}")
-    print(f"  IPv4:      {e.ipv4}/{e.ipv4_prefix}")
-    print(f"  Gateway:   {e.ipv4_gateway}")
-    if e.ipv6:
-        print(f"  IPv6:      {e.ipv6}/{e.ipv6_prefix}")
-        if e.ipv6_gateway:
-            print(f"  Gateway6:  {e.ipv6_gateway}")
-    print(f"  Subifs:    {len(e.subinterfaces)}")
+    print("Enter an interface name to see details (e.g., 'wan', 'lan')")
     print()
-    if e.subinterfaces:
+
+
+def _show_interface_detail(iface) -> None:
+    """Show interface details."""
+    print(f"{Colors.BOLD}Interface: {iface.name}{Colors.NC}")
+    print("=" * 50)
+    print(f"  Physical:  {iface.iface}")
+    print(f"  PCI:       {iface.pci}")
+    print(f"  MTU:       {iface.mtu}")
+    if iface.ipv4:
+        print("  IPv4 addresses:")
+        for addr in iface.ipv4:
+            print(f"    {addr.address}/{addr.prefix}")
+    else:
+        print("  IPv4:      (none)")
+    if iface.ipv6:
+        print("  IPv6 addresses:")
+        for addr in iface.ipv6:
+            print(f"    {addr.address}/{addr.prefix}")
+    print(f"  Subifs:    {len(iface.subinterfaces)}")
+    if iface.ospf_area is not None:
+        passive = " (passive)" if iface.ospf_passive else ""
+        print(f"  OSPF:      area {iface.ospf_area}{passive}")
+    if iface.ospf6_area is not None:
+        passive = " (passive)" if iface.ospf6_passive else ""
+        print(f"  OSPFv3:    area {iface.ospf6_area}{passive}")
+    print()
+    if iface.subinterfaces:
         print("Sub-interfaces:")
-        for sub in e.subinterfaces:
+        for sub in iface.subinterfaces:
             ips = []
             if sub.ipv4:
                 ips.append(f"{sub.ipv4}/{sub.ipv4_prefix}")
@@ -1424,7 +1416,23 @@ def _show_external(config) -> None:
             lcp = " (LCP)" if sub.create_lcp else ""
             print(f"  .{sub.vlan_id}: {', '.join(ips)}{lcp}")
         print()
-    print("Type 'subinterfaces' to manage VLAN sub-interfaces")
+    print("Commands: set-ipv4, set-ipv6, set-mtu, subinterfaces, ospf, ospf6")
+    print()
+
+
+def _show_routes(config) -> None:
+    """Show static routes."""
+    print(f"{Colors.BOLD}Static Routes{Colors.NC}")
+    print("=" * 50)
+    if not config.routes:
+        print("  (none configured)")
+    else:
+        for route in config.routes:
+            iface_str = f" via {route.interface}" if route.interface else ""
+            default_marker = " [default]" if route.destination in ("0.0.0.0/0", "::/0") else ""
+            print(f"  {route.destination:<20} -> {route.via}{iface_str}{default_marker}")
+    print()
+    print("Commands: add, delete, set-default-v4, set-default-v6")
     print()
 
 
