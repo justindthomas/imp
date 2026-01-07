@@ -93,7 +93,7 @@ class ModuleCommand:
     action: str  # "array_append", "array_remove", "array_list", "set_value", "show"
     target: str  # Config field to operate on
     params: list[ModuleCommandParam] = field(default_factory=list)
-    key: Optional[str] = None  # For array_remove: which field is the key
+    key: Optional[str | list[str]] = None  # Uniqueness key: single field or list for compound keys
     format: Optional[str] = None  # For array_list: display format string
 
 

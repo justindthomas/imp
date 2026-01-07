@@ -261,13 +261,24 @@ def _exec_array_append(ctx, mod_cfg: dict, cmd: 'ModuleCommand') -> None:
         print(f"{Colors.YELLOW}[!] Cancelled{Colors.NC}")
         return
 
-    # Check for duplicate (use first param as key if no explicit key)
-    key_field = cmd.key or (cmd.params[0].name if cmd.params else None)
-    if key_field and key_field in item:
-        key_val = item[key_field]
-        if any(existing.get(key_field) == key_val for existing in target_array):
-            print(f"{Colors.RED}[!] Entry with {key_field}={key_val} already exists{Colors.NC}")
-            return
+    # Check for duplicate using key field(s)
+    # key can be a single field name or a list of field names for compound keys
+    # If no key specified, use first param as key
+    key_fields = cmd.key if cmd.key else (cmd.params[0].name if cmd.params else None)
+    if key_fields:
+        # Normalize to list
+        if isinstance(key_fields, str):
+            key_fields = [key_fields]
+
+        # Check if all key fields are present in item
+        if all(k in item for k in key_fields):
+            def matches_key(existing):
+                return all(existing.get(k) == item.get(k) for k in key_fields)
+
+            if any(matches_key(existing) for existing in target_array):
+                key_display = ", ".join(f"{k}={item[k]}" for k in key_fields)
+                print(f"{Colors.RED}[!] Entry with {key_display} already exists{Colors.NC}")
+                return
 
     target_array.append(item)
     ctx.dirty = True
@@ -518,6 +529,37 @@ class MenuCompleter(Completer):
                 return None
         return menu
 
+    def _get_module_names_with_show_commands(self) -> list[str]:
+        """Get list of enabled module names that have show_commands defined."""
+        if not MODULE_LOADER_AVAILABLE:
+            return []
+        modules = []
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE) as f:
+                    config_data = json.load(f)
+                for mod in config_data.get("modules", []):
+                    if mod.get("enabled") and mod.get("name"):
+                        try:
+                            mod_def = load_module_definition(mod["name"])
+                            if mod_def.show_commands:
+                                modules.append(mod["name"])
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        return modules
+
+    def _get_module_show_commands(self, module_name: str) -> list[str]:
+        """Get list of show command names for a specific module."""
+        if not MODULE_LOADER_AVAILABLE:
+            return []
+        try:
+            mod_def = load_module_definition(module_name)
+            return [cmd.name for cmd in mod_def.show_commands]
+        except Exception:
+            return []
+
     def _get_menu_completions(self, cmd_prefix: list[str]) -> list[str]:
         """Get available commands and submenus for given context.
 
@@ -533,11 +575,17 @@ class MenuCompleter(Completer):
         if not self.ctx.path or self.ctx.path[0] != "config":
             # At root or non-config menu - show is for live state
             if cmd_prefix == ["show"]:
-                return ["interfaces", "ip", "ipv6", "neighbors", "sessions", "bgp", "ospf", "config"]
+                return ["interfaces", "ip", "ipv6", "neighbors", "bgp", "ospf", "module", "config"]
             if cmd_prefix == ["show", "ip"]:
                 return ["route", "fib"]
             if cmd_prefix == ["show", "ipv6"]:
                 return ["route", "fib"]
+            if cmd_prefix == ["show", "module"]:
+                # Return enabled modules with show_commands
+                return self._get_module_names_with_show_commands()
+            if len(cmd_prefix) == 3 and cmd_prefix[0] == "show" and cmd_prefix[1] == "module":
+                # Return show commands for the specific module
+                return self._get_module_show_commands(cmd_prefix[2])
             if cmd_prefix == ["show", "config"]:
                 return ["interfaces", "loopbacks", "bvi", "vlan-passthrough", "routing", "nat", "containers", "cpu"]
 
@@ -909,9 +957,9 @@ def cmd_show_live(ctx: MenuContext, args: list[str]) -> None:
         print("  ip fib [prefix]     - IPv4 forwarding table (VPP)")
         print("  ipv6 fib [prefix]   - IPv6 forwarding table (VPP)")
         print("  neighbors           - ARP/NDP neighbor table")
-        print("  sessions            - NAT session table")
         print("  bgp                 - BGP neighbor status")
         print("  ospf                - OSPF neighbor status")
+        print("  module <name> <cmd> - Module-specific commands")
         print()
         print("Prefix filter shows routes within the given prefix, e.g.:")
         print("  show ip route 10.0.0.0/8")
@@ -959,12 +1007,12 @@ def cmd_show_live(ctx: MenuContext, args: list[str]) -> None:
         print(f"Use: show {target} route [prefix], show {target} fib [prefix]")
     elif target == "neighbors":
         _show_live_neighbors()
-    elif target == "sessions":
-        _show_live_nat_sessions()
     elif target == "bgp":
         _show_live_bgp()
     elif target == "ospf":
         _show_live_ospf()
+    elif target == "module":
+        _show_live_module(args[1:])
     else:
         warn(f"Unknown show target: {target}")
         print("Use 'show' for available options")
@@ -1163,34 +1211,29 @@ def _show_live_neighbors() -> None:
     print()
 
 
-def _show_live_nat_sessions() -> None:
-    """Show NAT session table."""
-    print()
-    print(f"{Colors.BOLD}NAT Sessions (Live){Colors.NC}")
-    print("=" * 70)
-
-    success, output = vpp_exec("show det44 sessions", "nat")
-    if success:
-        print(output if output.strip() else "  (no active sessions)")
-    else:
-        error(f"Failed to get sessions: {output}")
-    print()
-
-
 def _show_live_bgp() -> None:
     """Show BGP neighbor status from FRR."""
     print()
     print(f"{Colors.BOLD}BGP Status (Live){Colors.NC}")
     print("=" * 70)
 
+    print(f"\n{Colors.CYAN}IPv4 Unicast:{Colors.NC}")
     result = subprocess.run(
         ["ip", "netns", "exec", "dataplane", "vtysh", "-c", "show ip bgp summary"],
         capture_output=True, text=True
     )
     if result.returncode == 0:
-        print(result.stdout if result.stdout.strip() else "  BGP not running or no peers")
+        print(result.stdout if result.stdout.strip() else "  (no peers)")
     else:
         error("Failed to get BGP status (FRR may not be running)")
+
+    print(f"\n{Colors.CYAN}IPv6 Unicast:{Colors.NC}")
+    result = subprocess.run(
+        ["ip", "netns", "exec", "dataplane", "vtysh", "-c", "show bgp ipv6 unicast summary"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print(result.stdout if result.stdout.strip() else "  (no peers)")
     print()
 
 
@@ -1215,6 +1258,101 @@ def _show_live_ospf() -> None:
     )
     if result.returncode == 0:
         print(result.stdout if result.stdout.strip() else "  (no neighbors)")
+    print()
+
+
+def _show_live_module(args: list[str]) -> None:
+    """Show module-specific live state using show_commands from module YAML."""
+    if not MODULE_LOADER_AVAILABLE:
+        error("Module loader not available")
+        return
+
+    # Get enabled modules with show_commands
+    enabled_modules = []
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE) as f:
+                config_data = json.load(f)
+            for mod in config_data.get("modules", []):
+                if mod.get("enabled") and mod.get("name"):
+                    mod_name = mod["name"]
+                    try:
+                        mod_def = load_module_definition(mod_name)
+                        if mod_def.show_commands:
+                            enabled_modules.append((mod_name, mod_def))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    if not args:
+        # List available modules and their commands
+        print()
+        print(f"{Colors.BOLD}Module Show Commands:{Colors.NC}")
+        if not enabled_modules:
+            print("  (no modules with show commands enabled)")
+        else:
+            for mod_name, mod_def in enabled_modules:
+                print(f"\n  {Colors.CYAN}{mod_name}{Colors.NC}:")
+                for cmd in mod_def.show_commands:
+                    desc = f" - {cmd.description}" if cmd.description else ""
+                    print(f"    {cmd.name}{desc}")
+        print()
+        print("Usage: show module <module_name> <command>")
+        print()
+        return
+
+    module_name = args[0]
+
+    # Find the module
+    mod_def = None
+    for name, mdef in enabled_modules:
+        if name == module_name:
+            mod_def = mdef
+            break
+
+    if not mod_def:
+        error(f"Module '{module_name}' not found or has no show commands")
+        if enabled_modules:
+            print(f"Available: {', '.join(n for n, _ in enabled_modules)}")
+        return
+
+    if len(args) < 2:
+        # List commands for this module
+        print()
+        print(f"{Colors.BOLD}Show commands for {module_name}:{Colors.NC}")
+        for cmd in mod_def.show_commands:
+            desc = f" - {cmd.description}" if cmd.description else ""
+            print(f"  {cmd.name}{desc}")
+        print()
+        print(f"Usage: show module {module_name} <command>")
+        print()
+        return
+
+    cmd_name = args[1]
+
+    # Find the command
+    show_cmd = None
+    for cmd in mod_def.show_commands:
+        if cmd.name == cmd_name:
+            show_cmd = cmd
+            break
+
+    if not show_cmd:
+        error(f"Unknown command '{cmd_name}' for module '{module_name}'")
+        print(f"Available: {', '.join(c.name for c in mod_def.show_commands)}")
+        return
+
+    # Execute the VPP command
+    print()
+    print(f"{Colors.BOLD}{show_cmd.description or show_cmd.name} ({module_name}){Colors.NC}")
+    print("=" * 70)
+
+    success, output = vpp_exec(show_cmd.vpp_command, module_name)
+    if success:
+        print(output if output.strip() else "  (no output)")
+    else:
+        error(f"Failed to execute: {output}")
     print()
 
 
@@ -1733,13 +1871,13 @@ def cmd_apply(ctx: MenuContext, args: list[str]) -> None:
                         if not success:
                             error("Some changes failed to apply. Manual intervention may be required.")
                             print("You can restart services to apply all changes from config files:")
-                            print("  systemctl restart vpp-core vpp-core-config vpp-nat frr")
+                            print(f"  {_get_restart_command()}")
                             return
                         else:
                             log("Live changes applied successfully")
                     else:
                         print("Changes saved to config files. Restart services to apply:")
-                        print("  systemctl restart vpp-core vpp-core-config vpp-nat frr")
+                        print(f"  {_get_restart_command()}")
                         return
 
                 # Handle restart-required changes
@@ -1748,7 +1886,7 @@ def cmd_apply(ctx: MenuContext, args: list[str]) -> None:
                     if response == 'y':
                         _restart_services()
                     else:
-                        print("Run 'systemctl restart vpp-core vpp-core-config vpp-nat frr' to apply remaining changes")
+                        print(f"Run '{_get_restart_command()}' to apply remaining changes")
                 else:
                     log("Configuration applied")
 
@@ -1759,7 +1897,7 @@ def cmd_apply(ctx: MenuContext, args: list[str]) -> None:
                 if response == 'y':
                     _restart_services()
                 else:
-                    print("Run 'systemctl restart vpp-core vpp-core-config vpp-nat frr' to apply changes")
+                    print(f"Run '{_get_restart_command()}' to apply changes")
 
         else:
             # No previous config - this is first-time setup, must restart
@@ -1769,7 +1907,7 @@ def cmd_apply(ctx: MenuContext, args: list[str]) -> None:
             if response == 'y':
                 _restart_services()
             else:
-                print("Run 'systemctl restart vpp-core vpp-core-config vpp-nat frr' to start services")
+                print(f"Run '{_get_restart_command()}' to start services")
 
     except Exception as e:
         error(f"Failed to apply: {e}")
@@ -1777,13 +1915,41 @@ def cmd_apply(ctx: MenuContext, args: list[str]) -> None:
         traceback.print_exc()
 
 
+def _get_module_services() -> list[str]:
+    """Get list of enabled module service names from config."""
+    if not CONFIG_FILE.exists():
+        return []
+    try:
+        with open(CONFIG_FILE) as f:
+            config = json.load(f)
+        services = []
+        for mod in config.get("modules", []):
+            if mod.get("enabled", False) and mod.get("name"):
+                services.append(f"vpp-{mod['name']}")
+        return services
+    except Exception:
+        return []
+
+
+def _get_restart_command() -> str:
+    """Get the full systemctl restart command for all services."""
+    base_services = ["vpp-core", "vpp-core-config"]
+    module_services = _get_module_services()
+    all_services = base_services + module_services + ["frr"]
+    return "systemctl restart " + " ".join(all_services)
+
+
 def _restart_services() -> None:
     """Restart all dataplane services in correct order."""
     log("Restarting services...")
-    # Order matters: vpp-core must be up before vpp-core-config, vpp-nat, and frr
+    # Order matters: vpp-core must be up before vpp-core-config, modules, and frr
     subprocess.run(["systemctl", "restart", "vpp-core"], check=False)
     subprocess.run(["systemctl", "restart", "vpp-core-config"], check=False)
-    subprocess.run(["systemctl", "restart", "vpp-nat"], check=False)
+
+    # Restart all enabled module services
+    for module_service in _get_module_services():
+        subprocess.run(["systemctl", "restart", module_service], check=False)
+
     subprocess.run(["systemctl", "restart", "frr"], check=False)
     log("Services restarted")
 
@@ -2979,6 +3145,11 @@ def cmd_modules_available(ctx: MenuContext, args: list[str]) -> None:
     examples = list_example_modules()
     if not examples:
         info(f"No module examples found in {MODULE_EXAMPLES_DIR}")
+        print("\nTo add module examples, either:")
+        print("  1. Rebuild the image with latest install-imp script")
+        print("  2. Manually create module YAML files in /usr/share/imp/module-examples/")
+        print("  3. Create modules directly in /persistent/config/modules/")
+        print("\nSee VPP_MODULES.md for module YAML format documentation.")
         return
 
     print("\nAvailable module examples:")

@@ -398,8 +398,11 @@ if [[ "$INSTALL_MODE" == "image" ]]; then
     # Mount virtual filesystems for chroot operations (image already has directories)
     log "Mounting virtual filesystems..."
     mount --rbind /dev  "$ROOTFS/dev"
+    mount --make-rslave "$ROOTFS/dev"
     mount --rbind /proc "$ROOTFS/proc"
+    mount --make-rslave "$ROOTFS/proc"
     mount --rbind /sys  "$ROOTFS/sys"
+    mount --make-rslave "$ROOTFS/sys"
 
     # Mount ESP
     mkdir -p "$ROOTFS/boot/efi"
@@ -443,8 +446,11 @@ if [[ "$INSTALL_MODE" == "bootstrap" || "$INSTALL_MODE" == "build" ]]; then
     # Mount virtual filesystems for chroot operations (debootstrap created directories)
     log "Mounting virtual filesystems..."
     mount --rbind /dev  "$ROOTFS/dev"
+    mount --make-rslave "$ROOTFS/dev"
     mount --rbind /proc "$ROOTFS/proc"
+    mount --make-rslave "$ROOTFS/proc"
     mount --rbind /sys  "$ROOTFS/sys"
+    mount --make-rslave "$ROOTFS/sys"
 
     # Mount ESP (not for build mode - no disk)
     if [[ "$INSTALL_MODE" != "build" ]]; then
@@ -529,6 +535,7 @@ EOF
         python3-prompt-toolkit \
         python3-requests \
         python3-rich \
+        python3-yaml \
         tshark
 
     # -------------------------------------------------------------------------
@@ -583,10 +590,11 @@ EOF
     chroot "$ROOTFS" chown -R frr:frr /etc/frr
 
     # Static systemd service units
+    # Note: VPP module services (vpp-nat, vpp-nat64, etc.) are generated dynamically
+    # by configure-router.py from templates/systemd/vpp-module.service.j2
     cp "$CONFIG_DIR/etc/systemd/system/netns-dataplane.service" "$ROOTFS/etc/systemd/system/"
     cp "$CONFIG_DIR/etc/systemd/system/vpp-core.service" "$ROOTFS/etc/systemd/system/"
     cp "$CONFIG_DIR/etc/systemd/system/vpp-core-config.service" "$ROOTFS/etc/systemd/system/"
-    cp "$CONFIG_DIR/etc/systemd/system/vpp-nat.service" "$ROOTFS/etc/systemd/system/"
     cp "$CONFIG_DIR/etc/systemd/system/incus-dataplane.service" "$ROOTFS/etc/systemd/system/"
     cp "$CONFIG_DIR/etc/systemd/system/incus-init.service" "$ROOTFS/etc/systemd/system/"
     cp "$CONFIG_DIR/etc/systemd/system/imp-apply-config.service" "$ROOTFS/etc/systemd/system/"
@@ -652,6 +660,9 @@ EOF
         ssh \
         imp-apply-config
 
+    # Disable the default VPP service (we use vpp-core and vpp-<module> instead)
+    chroot "$ROOTFS" systemctl disable vpp.service 2>/dev/null || true
+
     # -------------------------------------------------------------------------
     # Set root password
     # -------------------------------------------------------------------------
@@ -683,11 +694,11 @@ if [[ "$INSTALL_MODE" == "build" ]]; then
     rm -rf "${ROOTFS}/var/cache/apt/archives"/*.deb
     rm -rf "${ROOTFS}/var/lib/apt/lists"/*
 
-    # Unmount bind mounts
+    # Unmount bind mounts (use recursive unmount for rbind mounts)
     log "Unmounting filesystems..."
-    umount -l "$ROOTFS/dev" 2>/dev/null || true
-    umount -l "$ROOTFS/proc" 2>/dev/null || true
-    umount -l "$ROOTFS/sys" 2>/dev/null || true
+    umount -R "$ROOTFS/dev" 2>/dev/null || umount -l "$ROOTFS/dev" 2>/dev/null || true
+    umount -R "$ROOTFS/proc" 2>/dev/null || umount -l "$ROOTFS/proc" 2>/dev/null || true
+    umount -R "$ROOTFS/sys" 2>/dev/null || umount -l "$ROOTFS/sys" 2>/dev/null || true
 
     sync
     sleep 1
@@ -771,12 +782,12 @@ chroot "$ROOTFS" update-initramfs -u -k all
 # =============================================================================
 log "Finalizing installation..."
 
-# Unmount bind mounts first
+# Unmount bind mounts first (use recursive unmount for rbind mounts)
 log "Unmounting filesystems..."
-umount "$ROOTFS/boot/efi" || warn "ESP already unmounted"
-umount -l "$ROOTFS/dev" 2>/dev/null || true
-umount -l "$ROOTFS/proc" 2>/dev/null || true
-umount -l "$ROOTFS/sys" 2>/dev/null || true
+umount "$ROOTFS/boot/efi" 2>/dev/null || warn "ESP already unmounted"
+umount -R "$ROOTFS/dev" 2>/dev/null || umount -l "$ROOTFS/dev" 2>/dev/null || true
+umount -R "$ROOTFS/proc" 2>/dev/null || umount -l "$ROOTFS/proc" 2>/dev/null || true
+umount -R "$ROOTFS/sys" 2>/dev/null || umount -l "$ROOTFS/sys" 2>/dev/null || true
 
 # Give things a moment to settle
 sync
@@ -864,4 +875,8 @@ echo "  imp status          - Show service status"
 echo "  imp shell routing   - FRR/BGP shell (vtysh)"
 echo "  imp shell core      - VPP core CLI"
 echo "  imp shell nat       - VPP NAT CLI"
+echo ""
+echo "To reboot now:"
+echo "  reboot              - Normal reboot"
+echo "  reboot -f           - Force reboot (if normal fails)"
 echo ""

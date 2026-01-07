@@ -216,6 +216,20 @@ commands:
     target: mappings
     format: "{source_network} -> {nat_pool}"
 
+  # Add item with compound key (multiple fields determine uniqueness)
+  - path: bypass/add
+    description: "Add a bypass rule"
+    action: array_append
+    target: bypass_pairs
+    key: [source, destination]    # Compound key - both fields must match for duplicate
+    params:
+      - name: source
+        type: ipv4_cidr
+        prompt: "Source network"
+      - name: destination
+        type: ipv4_cidr
+        prompt: "Destination network"
+
   # Set a scalar value
   - path: set-prefix
     description: "Set BGP prefix"

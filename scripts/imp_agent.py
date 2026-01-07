@@ -146,8 +146,20 @@ except ImportError:
 # VPP Command Execution
 # =============================================================================
 
-VPP_CORE_SOCKET = "/run/vpp/core-cli.sock"
-VPP_NAT_SOCKET = "/run/vpp/nat-cli.sock"
+def get_vpp_socket(instance: str) -> str:
+    """Get VPP CLI socket path for an instance (core or module name)."""
+    return f"/run/vpp/{instance}-cli.sock"
+
+
+def get_available_vpp_instances() -> list[str]:
+    """Get list of available VPP instances (core + running modules)."""
+    instances = []
+    vpp_dir = Path("/run/vpp")
+    if vpp_dir.exists():
+        for sock in vpp_dir.glob("*-cli.sock"):
+            name = sock.name.replace("-cli.sock", "")
+            instances.append(name)
+    return sorted(instances)
 
 
 def vpp_exec(command: str, instance: str = "core") -> tuple[bool, str]:
@@ -156,16 +168,19 @@ def vpp_exec(command: str, instance: str = "core") -> tuple[bool, str]:
 
     Args:
         command: VPP CLI command to execute
-        instance: "core" or "nat"
+        instance: "core" or module name (e.g., "nat", "nat64")
 
     Returns:
         (success: bool, output: str)
     """
     import subprocess
 
-    socket = VPP_CORE_SOCKET if instance == "core" else VPP_NAT_SOCKET
+    socket = get_vpp_socket(instance)
 
     if not Path(socket).exists():
+        available = get_available_vpp_instances()
+        if available:
+            return False, f"VPP {instance} socket not found. Available: {', '.join(available)}"
         return False, f"VPP {instance} socket not found: {socket}"
 
     try:
@@ -406,12 +421,54 @@ def build_tools() -> list[dict]:
         {
             "type": "function",
             "function": {
-                "name": "get_nat_config",
-                "description": "Get NAT configuration including pool prefix, mappings, and bypass rules",
+                "name": "list_modules",
+                "description": "List available IMP VPP modules and their status. Shows which modules are installed, enabled, and what commands they provide.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
                     "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_module_config",
+                "description": "Get configuration for a specific IMP VPP module (e.g., 'nat', 'nat64'). Shows current settings from router.json.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "module_name": {
+                            "type": "string",
+                            "description": "Module name (e.g., 'nat', 'nat64')"
+                        }
+                    },
+                    "required": ["module_name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "execute_module_command",
+                "description": "Execute a command defined by an IMP VPP module. Use list_modules to see available commands for each module. Commands can add/remove array items, set values, or list configurations.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "module_name": {
+                            "type": "string",
+                            "description": "Module name (e.g., 'nat', 'nat64')"
+                        },
+                        "command_path": {
+                            "type": "string",
+                            "description": "Command path as defined in module YAML (e.g., 'mappings/add', 'bypass/delete', 'set-prefix')"
+                        },
+                        "params": {
+                            "type": "object",
+                            "description": "Parameters for the command as key-value pairs (e.g., {\"source_network\": \"192.168.1.0/24\", \"nat_pool\": \"23.177.24.96/30\"})"
+                        }
+                    },
+                    "required": ["module_name", "command_path"]
                 }
             }
         },
@@ -642,103 +699,6 @@ def build_tools() -> list[dict]:
                         }
                     },
                     "required": ["name"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "add_nat_mapping",
-                "description": "Add a NAT source mapping that translates traffic from a source network to a NAT pool",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "source_network": {
-                            "type": "string",
-                            "description": "Source network in CIDR notation (e.g., '192.168.1.0/24')"
-                        },
-                        "nat_pool": {
-                            "type": "string",
-                            "description": "NAT pool in CIDR notation (e.g., '23.177.24.96/30')"
-                        }
-                    },
-                    "required": ["source_network", "nat_pool"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "delete_nat_mapping",
-                "description": "Delete a NAT mapping by source network",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "source_network": {
-                            "type": "string",
-                            "description": "Source network to remove from NAT"
-                        }
-                    },
-                    "required": ["source_network"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "add_nat_bypass",
-                "description": "Add a NAT bypass rule that allows traffic between source and destination to skip NAT",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "source": {
-                            "type": "string",
-                            "description": "Source network in CIDR notation"
-                        },
-                        "destination": {
-                            "type": "string",
-                            "description": "Destination network in CIDR notation"
-                        }
-                    },
-                    "required": ["source", "destination"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "delete_nat_bypass",
-                "description": "Delete a NAT bypass rule",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "source": {
-                            "type": "string",
-                            "description": "Source network of the bypass rule"
-                        },
-                        "destination": {
-                            "type": "string",
-                            "description": "Destination network of the bypass rule"
-                        }
-                    },
-                    "required": ["source", "destination"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "set_nat_prefix",
-                "description": "Set the NAT pool prefix that will be announced via BGP",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "prefix": {
-                            "type": "string",
-                            "description": "NAT pool prefix in CIDR notation (e.g., '23.177.24.96/29')"
-                        }
-                    },
-                    "required": ["prefix"]
                 }
             }
         },
@@ -1025,8 +985,7 @@ def build_tools() -> list[dict]:
                     "properties": {
                         "instance": {
                             "type": "string",
-                            "description": "VPP instance: 'core' (main routing) or 'nat' (NAT translation)",
-                            "enum": ["core", "nat"]
+                            "description": "VPP instance: 'core' for main routing, or module name (e.g., 'nat', 'nat64')"
                         },
                         "interface": {
                             "type": "string",
@@ -1059,8 +1018,7 @@ def build_tools() -> list[dict]:
                     "properties": {
                         "instance": {
                             "type": "string",
-                            "description": "VPP instance to stop capture on: 'core' or 'nat'",
-                            "enum": ["core", "nat"]
+                            "description": "VPP instance: 'core' for main routing, or module name (e.g., 'nat', 'nat64')"
                         }
                     },
                     "required": ["instance"]
@@ -1071,7 +1029,7 @@ def build_tools() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "get_capture_status",
-                "description": "Show active captures on both VPP instances (core and NAT)",
+                "description": "Show active captures on all running VPP instances (core and modules)",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -1165,8 +1123,7 @@ def build_tools() -> list[dict]:
                     "properties": {
                         "instance": {
                             "type": "string",
-                            "description": "VPP instance: 'core' or 'nat'",
-                            "enum": ["core", "nat"]
+                            "description": "VPP instance: 'core' for main routing, or module name (e.g., 'nat', 'nat64')"
                         },
                         "input_node": {
                             "type": "string",
@@ -1191,8 +1148,7 @@ def build_tools() -> list[dict]:
                     "properties": {
                         "instance": {
                             "type": "string",
-                            "description": "VPP instance: 'core' or 'nat'",
-                            "enum": ["core", "nat"]
+                            "description": "VPP instance: 'core' for main routing, or module name (e.g., 'nat', 'nat64')"
                         },
                         "max_packets": {
                             "type": "integer",
@@ -1207,7 +1163,7 @@ def build_tools() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "get_trace_status",
-                "description": "Show trace status on both VPP instances (how many packets have been traced)",
+                "description": "Show trace status on all running VPP instances (how many packets have been traced)",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -1225,8 +1181,7 @@ def build_tools() -> list[dict]:
                     "properties": {
                         "instance": {
                             "type": "string",
-                            "description": "VPP instance: 'core' or 'nat'",
-                            "enum": ["core", "nat"]
+                            "description": "VPP instance: 'core' for main routing, or module name (e.g., 'nat', 'nat64')"
                         }
                     },
                     "required": ["instance"]
@@ -1522,35 +1477,272 @@ def tool_get_vlan_passthrough(config) -> str:
     return "\n".join(lines)
 
 
-def tool_get_nat_config(config) -> str:
-    """Get NAT configuration from NAT module."""
+def tool_list_modules(config) -> str:
+    """List available IMP VPP modules and their status."""
+    try:
+        from module_loader import (
+            list_available_modules,
+            list_example_modules,
+            load_module_definition,
+            MODULE_DEFINITIONS_DIR,
+        )
+    except ImportError:
+        return "Error: module_loader not available"
+
+    lines = ["IMP VPP Modules:"]
+
+    # Get installed modules
+    installed = list_available_modules()
+    examples = list_example_modules()
+
+    # Get enabled modules from config
+    enabled_modules = {}
+    if config and hasattr(config, 'modules'):
+        for m in config.modules:
+            if m.get('name'):
+                enabled_modules[m['name']] = m.get('enabled', False)
+
+    if not installed and not examples:
+        lines.append("  No modules installed or available")
+        lines.append(f"\nInstall modules from examples with: config modules install <name>")
+        return "\n".join(lines)
+
+    lines.append("\nInstalled modules:")
+    if installed:
+        for name, display_name, desc in installed:
+            status = "enabled" if enabled_modules.get(name) else "disabled"
+            lines.append(f"  {name}: {display_name} [{status}]")
+
+            # Show available commands for this module
+            try:
+                mod_def = load_module_definition(name)
+                if mod_def.cli_commands:
+                    lines.append(f"    Commands: {', '.join(c.path for c in mod_def.cli_commands)}")
+            except Exception:
+                pass
+    else:
+        lines.append("  (none)")
+
+    # Show available examples
+    example_names = {e[0] for e in examples}
+    installed_names = {i[0] for i in installed}
+    uninstalled = example_names - installed_names
+
+    if uninstalled:
+        lines.append("\nAvailable to install:")
+        for name, display_name, desc in examples:
+            if name in uninstalled:
+                lines.append(f"  {name}: {display_name}")
+
+    return "\n".join(lines)
+
+
+def tool_get_module_config(config, module_name: str) -> str:
+    """Get configuration for a specific IMP VPP module."""
     if not config:
         return "No configuration loaded"
 
-    nat_module = find_module(config, 'nat')
-    if not nat_module:
-        return "NAT module not configured. Install and enable with: config modules install nat && config modules enable nat"
+    module = find_module(config, module_name)
+    if not module:
+        return f"Module '{module_name}' not found in configuration"
 
-    if not nat_module.get('enabled'):
-        return "NAT module is disabled"
+    if not module.get('enabled'):
+        return f"Module '{module_name}' is disabled"
 
-    nat_config = nat_module.get('config', {})
-    mappings = nat_config.get('mappings', [])
-    bypass_pairs = nat_config.get('bypass_pairs', [])
+    mod_config = module.get('config', {})
+    if not mod_config:
+        return f"Module '{module_name}' has no configuration"
 
-    lines = [
-        f"NAT Pool Prefix: {nat_config.get('bgp_prefix') or 'Not set'}",
-        f"Mappings: {len(mappings)}",
-    ]
+    # Format the config nicely
+    lines = [f"Module '{module_name}' configuration:"]
 
-    for m in mappings:
-        lines.append(f"  {m.get('source_network')} -> {m.get('nat_pool')}")
+    def format_value(key, value, indent=2):
+        prefix = " " * indent
+        if isinstance(value, list):
+            if not value:
+                return [f"{prefix}{key}: (empty)"]
+            result = [f"{prefix}{key}: ({len(value)} items)"]
+            for i, item in enumerate(value):
+                if isinstance(item, dict):
+                    item_str = ", ".join(f"{k}={v}" for k, v in item.items())
+                    result.append(f"{prefix}  - {item_str}")
+                else:
+                    result.append(f"{prefix}  - {item}")
+            return result
+        elif isinstance(value, dict):
+            result = [f"{prefix}{key}:"]
+            for k, v in value.items():
+                result.extend(format_value(k, v, indent + 2))
+            return result
+        else:
+            return [f"{prefix}{key}: {value}"]
 
-    lines.append(f"Bypass Rules: {len(bypass_pairs)}")
-    for bp in bypass_pairs:
-        lines.append(f"  {bp.get('source')} -> {bp.get('destination')}")
+    for key, value in mod_config.items():
+        lines.extend(format_value(key, value))
 
     return "\n".join(lines)
+
+
+def tool_execute_module_command(config, ctx, module_name: str, command_path: str, params: dict = None) -> str:
+    """Execute a command defined by an IMP VPP module."""
+    try:
+        from module_loader import load_module_definition
+    except ImportError:
+        return "Error: module_loader not available"
+
+    if not config:
+        return "No configuration loaded"
+
+    # Load module definition to get command info
+    try:
+        mod_def = load_module_definition(module_name)
+    except FileNotFoundError:
+        return f"Module '{module_name}' not installed. Use 'config modules install {module_name}' first."
+    except Exception as e:
+        return f"Error loading module '{module_name}': {e}"
+
+    # Find the command
+    cmd = None
+    for c in mod_def.cli_commands:
+        if c.path == command_path:
+            cmd = c
+            break
+
+    if not cmd:
+        available = [c.path for c in mod_def.cli_commands]
+        return f"Command '{command_path}' not found in module '{module_name}'. Available: {', '.join(available)}"
+
+    # Ensure module exists in config
+    module = find_module(config, module_name)
+    if not module:
+        # Create the module entry
+        config.modules.append({
+            'name': module_name,
+            'enabled': True,
+            'config': {}
+        })
+        module = config.modules[-1]
+    elif not module.get('enabled'):
+        module['enabled'] = True
+
+    if 'config' not in module:
+        module['config'] = {}
+
+    mod_config = module['config']
+    params = params or {}
+
+    # Validate required parameters
+    if cmd.action in ('array_append', 'set_value'):
+        for param in cmd.params:
+            if param.required and param.name not in params:
+                return f"Missing required parameter: {param.name}"
+
+    # Execute based on action type
+    if cmd.action == 'array_append':
+        if cmd.target not in mod_config:
+            mod_config[cmd.target] = []
+
+        # Build the item from params
+        item = {}
+        for param in cmd.params:
+            if param.name in params:
+                item[param.name] = params[param.name]
+
+        # Check for duplicates using key
+        key_fields = cmd.key if cmd.key else ([cmd.params[0].name] if cmd.params else [])
+        if isinstance(key_fields, str):
+            key_fields = [key_fields]
+
+        if key_fields and all(k in item for k in key_fields):
+            for existing in mod_config[cmd.target]:
+                if all(existing.get(k) == item.get(k) for k in key_fields):
+                    key_display = ", ".join(f"{k}={item[k]}" for k in key_fields)
+                    return f"Error: Entry with {key_display} already exists"
+
+        mod_config[cmd.target].append(item)
+        ctx.dirty = True
+
+        if cmd.format:
+            display = cmd.format.format(**item)
+        else:
+            display = str(item)
+        return f"Added: {display}"
+
+    elif cmd.action == 'array_remove':
+        if cmd.target not in mod_config or not mod_config[cmd.target]:
+            return f"No {cmd.target} to remove"
+
+        # For agent, we need params to identify what to remove
+        if not params:
+            # List current items
+            items = mod_config[cmd.target]
+            lines = [f"Current {cmd.target}:"]
+            for i, item in enumerate(items):
+                if cmd.format:
+                    try:
+                        display = cmd.format.format(**item)
+                    except KeyError:
+                        display = str(item)
+                else:
+                    display = str(item)
+                lines.append(f"  {i+1}. {display}")
+            lines.append(f"\nProvide params to identify item to remove")
+            return "\n".join(lines)
+
+        # Find and remove matching item
+        items = mod_config[cmd.target]
+        for i, item in enumerate(items):
+            matches = all(item.get(k) == v for k, v in params.items() if k in item)
+            if matches:
+                removed = items.pop(i)
+                ctx.dirty = True
+                if cmd.format:
+                    try:
+                        display = cmd.format.format(**removed)
+                    except KeyError:
+                        display = str(removed)
+                else:
+                    display = str(removed)
+                return f"Removed: {display}"
+
+        return f"No matching item found in {cmd.target}"
+
+    elif cmd.action == 'array_list':
+        if cmd.target not in mod_config or not mod_config[cmd.target]:
+            return f"No {cmd.target} configured"
+
+        lines = [f"{cmd.target}:"]
+        for item in mod_config[cmd.target]:
+            if cmd.format:
+                try:
+                    display = cmd.format.format(**item)
+                except KeyError:
+                    display = str(item)
+            else:
+                display = str(item)
+            lines.append(f"  {display}")
+        return "\n".join(lines)
+
+    elif cmd.action == 'set_value':
+        if not params or cmd.target.split('.')[-1] not in params:
+            # Check for the parameter name matching target
+            param_name = cmd.params[0].name if cmd.params else cmd.target
+            if param_name not in params:
+                return f"Missing parameter: {param_name}"
+            value = params[param_name]
+        else:
+            value = params.get(cmd.target.split('.')[-1]) or params.get(cmd.params[0].name if cmd.params else cmd.target)
+
+        old_value = mod_config.get(cmd.target, '')
+        mod_config[cmd.target] = value
+        ctx.dirty = True
+        return f"Set {cmd.target}: {old_value or '(none)'} -> {value}"
+
+    elif cmd.action == 'show':
+        return tool_get_module_config(config, module_name)
+
+    else:
+        return f"Unknown action type: {cmd.action}"
 
 
 def tool_get_bgp_config(config) -> str:
@@ -1768,137 +1960,6 @@ def tool_delete_loopback(config, ctx, name: str) -> str:
     config.loopbacks.remove(lo)
     ctx.dirty = True
     return f"Deleted loop{instance} ({lo.name})"
-
-
-def _ensure_nat_module(config) -> dict:
-    """Ensure NAT module exists and is enabled, return module dict."""
-    nat_module = find_module(config, 'nat')
-    if not nat_module:
-        # Create NAT module entry
-        config.modules.append({
-            'name': 'nat',
-            'enabled': True,
-            'config': {
-                'bgp_prefix': '',
-                'mappings': [],
-                'bypass_pairs': []
-            }
-        })
-        return config.modules[-1]
-    if not nat_module.get('enabled'):
-        nat_module['enabled'] = True
-    if 'config' not in nat_module:
-        nat_module['config'] = {'bgp_prefix': '', 'mappings': [], 'bypass_pairs': []}
-    return nat_module
-
-
-def tool_add_nat_mapping(config, ctx, source_network: str, nat_pool: str) -> str:
-    """Add a NAT mapping."""
-    classes = _get_config_classes()
-    if not classes:
-        return "Error: Configuration module not available"
-
-    if not classes['validate_ipv4_cidr'](source_network):
-        return f"Error: Invalid source network: {source_network}"
-    if not classes['validate_ipv4_cidr'](nat_pool):
-        return f"Error: Invalid NAT pool: {nat_pool}"
-
-    nat_module = _ensure_nat_module(config)
-    nat_config = nat_module['config']
-    if 'mappings' not in nat_config:
-        nat_config['mappings'] = []
-
-    # Check for duplicate
-    if any(m.get('source_network') == source_network for m in nat_config['mappings']):
-        return f"Error: Mapping for {source_network} already exists"
-
-    nat_config['mappings'].append({
-        'source_network': source_network,
-        'nat_pool': nat_pool
-    })
-    ctx.dirty = True
-    return f"Added NAT mapping: {source_network} -> {nat_pool}"
-
-
-def tool_delete_nat_mapping(config, ctx, source_network: str) -> str:
-    """Delete a NAT mapping."""
-    nat_module = find_module(config, 'nat')
-    if not nat_module or 'config' not in nat_module:
-        return "NAT module not configured"
-
-    mappings = nat_module['config'].get('mappings', [])
-    mapping = next((m for m in mappings if m.get('source_network') == source_network), None)
-    if not mapping:
-        return f"NAT mapping for {source_network} not found"
-
-    mappings.remove(mapping)
-    ctx.dirty = True
-    return f"Deleted NAT mapping for {source_network}"
-
-
-def tool_add_nat_bypass(config, ctx, source: str, destination: str) -> str:
-    """Add a NAT bypass rule."""
-    classes = _get_config_classes()
-    if not classes:
-        return "Error: Configuration module not available"
-
-    if not classes['validate_ipv4_cidr'](source):
-        return f"Error: Invalid source network: {source}"
-    if not classes['validate_ipv4_cidr'](destination):
-        return f"Error: Invalid destination network: {destination}"
-
-    nat_module = _ensure_nat_module(config)
-    nat_config = nat_module['config']
-    if 'bypass_pairs' not in nat_config:
-        nat_config['bypass_pairs'] = []
-
-    # Check for duplicate
-    if any(b.get('source') == source and b.get('destination') == destination
-           for b in nat_config['bypass_pairs']):
-        return f"Error: Bypass rule {source} -> {destination} already exists"
-
-    nat_config['bypass_pairs'].append({
-        'source': source,
-        'destination': destination
-    })
-    ctx.dirty = True
-    return f"Added NAT bypass: {source} -> {destination}"
-
-
-def tool_delete_nat_bypass(config, ctx, source: str, destination: str) -> str:
-    """Delete a NAT bypass rule."""
-    nat_module = find_module(config, 'nat')
-    if not nat_module or 'config' not in nat_module:
-        return "NAT module not configured"
-
-    bypass_pairs = nat_module['config'].get('bypass_pairs', [])
-    bypass = next((b for b in bypass_pairs
-                   if b.get('source') == source and b.get('destination') == destination), None)
-    if not bypass:
-        return f"NAT bypass rule {source} -> {destination} not found"
-
-    bypass_pairs.remove(bypass)
-    ctx.dirty = True
-    return f"Deleted NAT bypass: {source} -> {destination}"
-
-
-def tool_set_nat_prefix(config, ctx, prefix: str) -> str:
-    """Set NAT pool prefix."""
-    classes = _get_config_classes()
-    if not classes:
-        return "Error: Configuration module not available"
-
-    if not classes['validate_ipv4_cidr'](prefix):
-        return f"Error: Invalid prefix: {prefix}"
-
-    nat_module = _ensure_nat_module(config)
-    old_prefix = nat_module['config'].get('bgp_prefix', '')
-    nat_module['config']['bgp_prefix'] = prefix
-    ctx.dirty = True
-
-    if old_prefix:
-        return f"Changed NAT prefix from {old_prefix} to {prefix}"
-    return f"Set NAT prefix to {prefix}"
 
 
 def tool_add_vlan_passthrough(config, ctx, vlan_id: int, internal_interface: str,
@@ -2500,8 +2561,10 @@ def tool_start_capture(instance: str, interface: str = "any", direction: str = "
     """Start a packet capture on a VPP instance."""
     import time
 
-    if instance not in ("core", "nat"):
-        return f"Error: instance must be 'core' or 'nat', got '{instance}'"
+    socket = get_vpp_socket(instance)
+    if not Path(socket).exists():
+        available = get_available_vpp_instances()
+        return f"Error: VPP instance '{instance}' not found. Available: {', '.join(available) if available else 'none'}"
 
     # Validate direction
     valid_directions = ["rx", "tx", "drop", "rx tx", "rx tx drop", "tx rx", "rx drop", "tx drop"]
@@ -2528,8 +2591,10 @@ def tool_start_capture(instance: str, interface: str = "any", direction: str = "
 
 def tool_stop_capture(instance: str) -> str:
     """Stop an active packet capture."""
-    if instance not in ("core", "nat"):
-        return f"Error: instance must be 'core' or 'nat', got '{instance}'"
+    socket = get_vpp_socket(instance)
+    if not Path(socket).exists():
+        available = get_available_vpp_instances()
+        return f"Error: VPP instance '{instance}' not found. Available: {', '.join(available) if available else 'none'}"
 
     success, output = vpp_exec("pcap trace off", instance)
     if success:
@@ -2541,16 +2606,15 @@ def tool_stop_capture(instance: str) -> str:
 
 
 def tool_get_capture_status() -> str:
-    """Show active captures on both VPP instances."""
+    """Show active captures on all running VPP instances."""
     import re
+    instances = get_available_vpp_instances()
+    if not instances:
+        return "No VPP instances running"
+
     lines = ["Capture Status:"]
 
-    for instance in ("core", "nat"):
-        socket = VPP_CORE_SOCKET if instance == "core" else VPP_NAT_SOCKET
-        if not Path(socket).exists():
-            lines.append(f"  {instance}: VPP not running")
-            continue
-
+    for instance in instances:
         success, output = vpp_exec("pcap trace status", instance)
         if success:
             if not output.strip() or "No pcap" in output or "disabled" in output.lower():
@@ -2769,8 +2833,10 @@ def tool_tshark_query(filename: str, display_filter: str = None,
 
 def tool_start_trace(instance: str, input_node: str, count: int = 50) -> str:
     """Start VPP graph tracing."""
-    if instance not in ("core", "nat"):
-        return f"Error: instance must be 'core' or 'nat', got '{instance}'"
+    socket = get_vpp_socket(instance)
+    if not Path(socket).exists():
+        available = get_available_vpp_instances()
+        return f"Error: VPP instance '{instance}' not found. Available: {', '.join(available) if available else 'none'}"
 
     cmd = f"trace add {input_node} {count}"
     success, output = vpp_exec(cmd, instance)
@@ -2785,8 +2851,10 @@ def tool_show_trace(instance: str, max_packets: int = 10) -> str:
     """Show VPP graph trace output."""
     import re
 
-    if instance not in ("core", "nat"):
-        return f"Error: instance must be 'core' or 'nat', got '{instance}'"
+    socket = get_vpp_socket(instance)
+    if not Path(socket).exists():
+        available = get_available_vpp_instances()
+        return f"Error: VPP instance '{instance}' not found. Available: {', '.join(available) if available else 'none'}"
 
     success, output = vpp_exec(f"show trace max {max_packets}", instance)
 
@@ -2806,16 +2874,15 @@ def tool_show_trace(instance: str, max_packets: int = 10) -> str:
 
 
 def tool_get_trace_status() -> str:
-    """Show trace status on both VPP instances."""
+    """Show trace status on all running VPP instances."""
     import re
+    instances = get_available_vpp_instances()
+    if not instances:
+        return "No VPP instances running"
+
     lines = ["Trace Status:"]
 
-    for instance in ("core", "nat"):
-        socket = VPP_CORE_SOCKET if instance == "core" else VPP_NAT_SOCKET
-        if not Path(socket).exists():
-            lines.append(f"  {instance}: VPP not running")
-            continue
-
+    for instance in instances:
         # Get trace and count actual "Packet N" entries (across all threads)
         success, output = vpp_exec("show trace", instance)
         if success:
@@ -2832,8 +2899,10 @@ def tool_get_trace_status() -> str:
 
 def tool_clear_trace(instance: str) -> str:
     """Clear trace buffer."""
-    if instance not in ("core", "nat"):
-        return f"Error: instance must be 'core' or 'nat', got '{instance}'"
+    socket = get_vpp_socket(instance)
+    if not Path(socket).exists():
+        available = get_available_vpp_instances()
+        return f"Error: VPP instance '{instance}' not found. Available: {', '.join(available) if available else 'none'}"
 
     success, output = vpp_exec("clear trace", instance)
     if success:
@@ -2882,8 +2951,17 @@ def execute_tool(name: str, args: dict, config, ctx) -> str:
             return tool_get_bvi_domains(config)
         if name == "get_vlan_passthrough":
             return tool_get_vlan_passthrough(config)
-        if name == "get_nat_config":
-            return tool_get_nat_config(config)
+        if name == "list_modules":
+            return tool_list_modules(config)
+        if name == "get_module_config":
+            return tool_get_module_config(config, module_name=args.get("module_name", ""))
+        if name == "execute_module_command":
+            return tool_execute_module_command(
+                config, ctx,
+                module_name=args.get("module_name", ""),
+                command_path=args.get("command_path", ""),
+                params=args.get("params", {})
+            )
         if name == "get_bgp_config":
             return tool_get_bgp_config(config)
         if name == "get_ospf_config":
@@ -2931,28 +3009,6 @@ def execute_tool(name: str, args: dict, config, ctx) -> str:
             )
         if name == "delete_loopback":
             return tool_delete_loopback(config, ctx, name=args.get("name", ""))
-        if name == "add_nat_mapping":
-            return tool_add_nat_mapping(
-                config, ctx,
-                source_network=args.get("source_network", ""),
-                nat_pool=args.get("nat_pool", "")
-            )
-        if name == "delete_nat_mapping":
-            return tool_delete_nat_mapping(config, ctx, source_network=args.get("source_network", ""))
-        if name == "add_nat_bypass":
-            return tool_add_nat_bypass(
-                config, ctx,
-                source=args.get("source", ""),
-                destination=args.get("destination", "")
-            )
-        if name == "delete_nat_bypass":
-            return tool_delete_nat_bypass(
-                config, ctx,
-                source=args.get("source", ""),
-                destination=args.get("destination", "")
-            )
-        if name == "set_nat_prefix":
-            return tool_set_nat_prefix(config, ctx, prefix=args.get("prefix", ""))
         if name == "add_vlan_passthrough":
             return tool_add_vlan_passthrough(
                 config, ctx,
@@ -3109,9 +3165,34 @@ BGP supports multiple peers:
 - Use remove_bgp_peer to remove peers by IP address
 - Use get_bgp_config to see all configured peers before making changes
 
+IMP VPP Module Architecture:
+IMP runs multiple VPP processes connected via memif shared memory:
+- **core**: The main VPP instance with DPDK, handles routing, linux-cp (FRR integration), ACLs, ABF
+- **Module instances** (e.g., nat, nat64): Separate VPP processes for specific functions
+
+This is NOT the same as VPP plugins (acl-plugin, nat-plugin, etc.). IMP modules are:
+- Separate OS processes (vpp-core, vpp-nat, vpp-nat64)
+- Connected via memif sockets in /run/vpp/
+- Defined in YAML files in /persistent/config/modules/
+- Enabled/disabled in router.json
+
+The reason for separate processes: VPP's det44 NAT is incompatible with linux-cp plugin (needed for FRR).
+Running NAT in a separate VPP instance connected via memif solves this.
+
+Module tools:
+- **list_modules**: See installed modules, their status, and available commands
+- **get_module_config**: View a module's current configuration
+- **execute_module_command**: Run module-defined commands (add/remove/list/set)
+
+Example for NAT module:
+- list_modules → shows nat module with commands: mappings/add, mappings/delete, mappings/list, bypass/add, bypass/delete, bypass/list, set-prefix, show
+- get_module_config(module_name="nat") → shows current NAT configuration
+- execute_module_command(module_name="nat", command_path="mappings/add", params={{"source_network": "192.168.1.0/24", "nat_pool": "23.177.24.96/30"}})
+- execute_module_command(module_name="nat", command_path="set-prefix", params={{"prefix": "23.177.24.96/29"}})
+
 Packet Capture (pcap files for Wireshark):
-- Use start_capture to capture packets on VPP core or NAT instances
-- The "core" instance handles main routing; "nat" handles NAT translation
+- Use start_capture to capture packets on VPP instances (core or modules like nat, nat64)
+- The "core" instance handles main routing; modules handle specific functions (e.g., nat for NAT translation)
 - Captures are written to /tmp as .pcap files
 - Use stop_capture to stop and finalize a capture
 - Use analyze_capture to get protocol statistics and top conversations
@@ -3130,7 +3211,7 @@ VPP Graph Trace (debug packet flow through VPP nodes):
   * Protocol filter: ip4-input, ip6-input, arp-input, ip4-icmp-input, icmp6-input
   * Routing: ip4-lookup, ip6-lookup, ip4-rewrite, ip6-rewrite
   * Policy: abf-input-ip4, abf-input-ip6, acl-plugin-in-ip4-fa, acl-plugin-in-ip6-fa
-  * NAT (on NAT instance): nat44-ed-in2out, nat44-ed-out2in
+  * NAT (on nat module): nat44-ed-in2out, nat44-ed-out2in, det44-in2out, det44-out2in
   * Local delivery: ip4-local, ip6-local
 
 Important notes:

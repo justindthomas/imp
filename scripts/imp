@@ -8,7 +8,7 @@ Usage:
     imp config edit           Edit configuration interactively
     imp shell routing         Open FRR/vtysh shell (routing protocols)
     imp shell core            Open VPP core instance CLI
-    imp shell nat             Open VPP NAT instance CLI
+    imp shell <module>        Open VPP module CLI (e.g., nat, nat64)
     imp snapshot list         List all snapshots
     imp snapshot create       Create a snapshot of current system
     imp snapshot rollback     Restore from a snapshot (creates new boot environment)
@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -147,18 +148,84 @@ def cmd_shell_core(args) -> int:
     return result.returncode
 
 
-def cmd_shell_nat(args) -> int:
-    """Open VPP NAT instance CLI."""
-    if not Path(VPP_NAT_SOCKET).exists():
-        error(f"VPP NAT socket not found: {VPP_NAT_SOCKET}")
-        print("\nIs VPP NAT running? Check: systemctl status vpp-nat")
+def cmd_shell(args) -> int:
+    """Route shell command to appropriate handler."""
+    target = getattr(args, "target", None)
+
+    if not target:
+        # Show available shells
+        print(f"\n{Colors.BOLD}Available shells:{Colors.NC}")
+        print("  routing    FRR/vtysh (BGP, OSPF)")
+        print("  core       VPP core instance")
+
+        # List enabled modules
+        modules = get_enabled_modules()
+        for service_name, display_name in modules:
+            module_name = service_name.replace("vpp-", "")
+            print(f"  {module_name:<10} {display_name}")
+
+        # Also list any running module sockets not in config
+        try:
+            vpp_sockets = list(Path("/run/vpp").glob("*-cli.sock"))
+            known_names = {"core"} | {s.replace("vpp-", "") for s, _ in modules}
+            for sock in vpp_sockets:
+                name = sock.name.replace("-cli.sock", "")
+                if name not in known_names:
+                    print(f"  {name:<10} (running, not in config)")
+        except Exception:
+            pass
+
+        print(f"\nUsage: imp shell <target>")
+        return 0
+
+    # Route to handler
+    if target in ("routing", "frr", "vtysh"):
+        return cmd_shell_routing(args)
+    elif target in ("core", "vpp"):
+        return cmd_shell_core(args)
+    else:
+        # Treat as module name
+        args.module_name = target
+        return cmd_shell_module(args)
+
+
+def cmd_shell_module(args) -> int:
+    """Open VPP module instance CLI."""
+    module_name = args.module_name
+    socket_path = f"/run/vpp/{module_name}-cli.sock"
+
+    if not Path(socket_path).exists():
+        error(f"VPP {module_name} socket not found: {socket_path}")
+        print(f"\nIs vpp-{module_name} running? Check: systemctl status vpp-{module_name}")
+
+        # List available module sockets
+        vpp_sockets = list(Path("/run/vpp").glob("*-cli.sock"))
+        module_sockets = [s for s in vpp_sockets if s.name != "core-cli.sock"]
+        if module_sockets:
+            print("\nAvailable module sockets:")
+            for sock in module_sockets:
+                name = sock.name.replace("-cli.sock", "")
+                print(f"  {name}")
         return 1
 
-    log("Entering VPP NAT CLI...")
+    # Try to get display name from module definition
+    display_name = module_name
+    module_yaml = Path(f"/persistent/config/modules/{module_name}.yaml")
+    if module_yaml.exists():
+        try:
+            import yaml
+            with open(module_yaml) as f:
+                mod_def = yaml.safe_load(f)
+                if mod_def and mod_def.get("display_name"):
+                    display_name = mod_def["display_name"]
+        except Exception:
+            pass
+
+    log(f"Entering {display_name} CLI...")
     print("Type 'quit' to return\n")
 
     result = subprocess.run(
-        ["vppctl", "-s", VPP_NAT_SOCKET],
+        ["vppctl", "-s", socket_path],
         check=False
     )
     return result.returncode
@@ -168,16 +235,58 @@ def cmd_shell_nat(args) -> int:
 # Status Command
 # =============================================================================
 
+def get_enabled_modules() -> list[tuple[str, str]]:
+    """Get list of enabled modules from router.json.
+
+    Returns list of (service_name, display_name) tuples.
+    """
+    if not CONFIG_FILE.exists():
+        return []
+
+    try:
+        with open(CONFIG_FILE) as f:
+            config = json.load(f)
+
+        modules = []
+        for mod in config.get("modules", []):
+            if mod.get("enabled", False):
+                name = mod.get("name", "")
+                if name:
+                    # Try to load module definition for display name
+                    display_name = f"VPP {name} module"
+                    module_yaml = Path(f"/persistent/config/modules/{name}.yaml")
+                    if module_yaml.exists():
+                        try:
+                            import yaml
+                            with open(module_yaml) as mf:
+                                mod_def = yaml.safe_load(mf)
+                                if mod_def and mod_def.get("display_name"):
+                                    display_name = mod_def["display_name"]
+                        except Exception:
+                            pass
+                    modules.append((f"vpp-{name}", display_name))
+        return modules
+    except Exception:
+        return []
+
+
 def cmd_status(args) -> int:
     """Show status of IMP services."""
+    # Core services (always shown)
     services = [
         ("imp-apply-config", "Configuration auto-apply"),
         ("netns-dataplane", "Dataplane namespace"),
         ("vpp-core", "VPP core instance"),
-        ("vpp-nat", "VPP NAT instance"),
+    ]
+
+    # Add enabled modules dynamically
+    services.extend(get_enabled_modules())
+
+    # Add remaining core services
+    services.extend([
         ("frr", "FRR routing"),
         ("incus", "Incus containers"),
-    ]
+    ])
 
     print(f"\n{Colors.BOLD}IMP Service Status{Colors.NC}")
     print("=" * 50)
@@ -777,6 +886,8 @@ Examples:
   imp config edit               Interactive configuration wizard
   imp shell routing             Open FRR/vtysh for BGP/OSPF
   imp shell core                Open VPP core CLI
+  imp shell nat                 Open VPP module CLI (e.g., nat, nat64)
+  imp shell                     List available shells
   imp snapshot list             List all snapshots
   imp snapshot create           Create a snapshot
   imp snapshot rollback NAME    Restore from snapshot
@@ -803,18 +914,14 @@ Examples:
     config_show = config_sub.add_parser("show", help="Show current configuration")
     config_show.set_defaults(func=cmd_config_show)
 
-    # shell subcommand
+    # shell subcommand - accepts any name (routing, core, or module name)
     shell_parser = subparsers.add_parser("shell", help="Access CLI shells")
-    shell_sub = shell_parser.add_subparsers(dest="shell_type")
-
-    shell_routing = shell_sub.add_parser("routing", help="FRR/vtysh shell", aliases=["frr", "vtysh"])
-    shell_routing.set_defaults(func=cmd_shell_routing)
-
-    shell_core = shell_sub.add_parser("core", help="VPP core CLI", aliases=["vpp"])
-    shell_core.set_defaults(func=cmd_shell_core)
-
-    shell_nat = shell_sub.add_parser("nat", help="VPP NAT CLI")
-    shell_nat.set_defaults(func=cmd_shell_nat)
+    shell_parser.add_argument(
+        "target",
+        nargs="?",
+        help="Shell target: routing (FRR), core (VPP), or module name"
+    )
+    shell_parser.set_defaults(func=cmd_shell)
 
     # status subcommand
     status_parser = subparsers.add_parser("status", help="Show service status")
@@ -871,10 +978,6 @@ Examples:
 
     if args.command == "config" and not getattr(args, "config_action", None):
         config_parser.print_help()
-        return 0
-
-    if args.command == "shell" and not getattr(args, "shell_type", None):
-        shell_parser.print_help()
         return 0
 
     if args.command == "snapshot" and not getattr(args, "snapshot_action", None):
