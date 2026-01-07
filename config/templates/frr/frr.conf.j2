@@ -39,16 +39,16 @@ router bgp {{ bgp.asn }}
  neighbor {{ peer.peer_ip }} update-source {{ peer.update_source }}
 {% elif ':' in peer.peer_ip %}
 {# For IPv6 peers, use first interface with IPv6 #}
-{% for iface in interfaces if iface.ipv6 %}
- neighbor {{ peer.peer_ip }} update-source {{ iface.ipv6[0].address }}
-{% break %}
-{% endfor %}
+{% set first_ipv6 = interfaces | selectattr('ipv6') | first %}
+{% if first_ipv6 and first_ipv6.ipv6 %}
+ neighbor {{ peer.peer_ip }} update-source {{ first_ipv6.ipv6[0].address }}
+{% endif %}
 {% else %}
 {# For IPv4 peers, use first interface with IPv4 #}
-{% for iface in interfaces if iface.ipv4 %}
- neighbor {{ peer.peer_ip }} update-source {{ iface.ipv4[0].address }}
-{% break %}
-{% endfor %}
+{% set first_ipv4 = interfaces | selectattr('ipv4') | first %}
+{% if first_ipv4 and first_ipv4.ipv4 %}
+ neighbor {{ peer.peer_ip }} update-source {{ first_ipv4.ipv4[0].address }}
+{% endif %}
 {% endif %}
 {% endfor %}
  !

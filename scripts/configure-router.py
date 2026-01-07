@@ -292,9 +292,10 @@ class ACLBypassPair:
 
 @dataclass
 class VLANPassthrough:
-    """A VLAN to pass through (L2 xconnect) between external and an internal interface."""
+    """A VLAN to pass through (L2 xconnect) between two interfaces."""
     vlan_id: int  # VLAN ID (same on both sides)
-    internal_interface: str  # VPP interface name, e.g., "internal0"
+    from_interface: str  # Source interface name (e.g., "wan")
+    to_interface: str  # Destination interface name (e.g., "lan")
     vlan_type: str = "dot1q"  # "dot1q" (802.1Q) or "dot1ad" (QinQ S-tag)
     inner_vlan: Optional[int] = None  # For QinQ: the inner C-tag (if specific)
 
@@ -746,7 +747,7 @@ def phase2_select_interfaces(interfaces: list[InterfaceInfo]) -> tuple[Interface
 
 
 def phase3_interface_config(dataplane_ifaces: list[InterfaceInfo]) -> list[Interface]:
-    """Phase 3: Configure interfaces (minimal - name + one IPv4)."""
+    """Phase 3: Configure interfaces (name + IPv4 + optional IPv6)."""
     log("Phase 3: Interface Configuration")
 
     interfaces = []
@@ -763,19 +764,28 @@ def phase3_interface_config(dataplane_ifaces: list[InterfaceInfo]) -> list[Inter
             warn(f"Name '{name}' is already used")
             name = prompt_string("  Name (must be unique)")
 
-        # Get IPv4 address (required for minimal setup)
+        # Get IPv4 address (required)
         ipv4, prefix = prompt_ipv4_cidr("IPv4 Address")
+
+        # Get optional IPv6 address
+        ipv6_addrs = []
+        ipv6, ipv6_prefix = prompt_ipv6_cidr("IPv6 Address")
+        if ipv6:
+            ipv6_addrs.append(InterfaceAddress(address=ipv6, prefix=ipv6_prefix))
 
         interfaces.append(Interface(
             name=name,
             iface=iface_info.name,
             pci=iface_info.pci,
             ipv4=[InterfaceAddress(address=ipv4, prefix=prefix)],
-            ipv6=[],
+            ipv6=ipv6_addrs,
             mtu=1500,
         ))
 
-        info(f"Added interface: {name} ({iface_info.name}) with {ipv4}/{prefix}")
+        if ipv6:
+            info(f"Added interface: {name} ({iface_info.name}) with {ipv4}/{prefix} and {ipv6}/{ipv6_prefix}")
+        else:
+            info(f"Added interface: {name} ({iface_info.name}) with {ipv4}/{prefix}")
 
     return interfaces
 
@@ -933,28 +943,39 @@ def phase_vlan_passthrough(interfaces: list[Interface]) -> list[VLANPassthrough]
         if vlan_type_idx == 2:
             inner_vlan = prompt_int("  Inner VLAN ID (C-tag)", min_val=1, max_val=4094)
 
-        # Select target interface
-        if len(interface_names) == 1:
-            target_iface = interface_names[0]
-            info(f"Using interface: {target_iface}")
+        # Select source interface
+        if len(interface_names) < 2:
+            error("Need at least 2 interfaces for VLAN passthrough")
+            return []
+
+        print()
+        from_idx = prompt_select("Select source interface:", interface_names)
+        from_iface = interface_names[from_idx]
+
+        # Select destination interface (exclude source)
+        remaining = [n for n in interface_names if n != from_iface]
+        if len(remaining) == 1:
+            to_iface = remaining[0]
+            info(f"Using destination: {to_iface}")
         else:
-            idx = prompt_select("Select target interface:", interface_names)
-            target_iface = interface_names[idx]
+            to_idx = prompt_select("Select destination interface:", remaining)
+            to_iface = remaining[to_idx]
 
         vlans.append(VLANPassthrough(
             vlan_id=vlan_id,
-            internal_interface=target_iface,  # Field name kept for compatibility
+            from_interface=from_iface,
+            to_interface=to_iface,
             vlan_type=vlan_type,
             inner_vlan=inner_vlan
         ))
 
         # Show what was added
         if inner_vlan:
-            info(f"Added: VLAN {vlan_id}.{inner_vlan} (QinQ) <-> {target_iface}")
+            info(f"Added: VLAN {vlan_id}.{inner_vlan} (QinQ) {from_iface} <-> {to_iface}")
         elif vlan_type == "dot1ad":
-            info(f"Added: S-VLAN {vlan_id} (QinQ, all C-tags) <-> {target_iface}")
+            info(f"Added: S-VLAN {vlan_id} (QinQ, all C-tags) {from_iface} <-> {to_iface}")
         else:
-            info(f"Added: VLAN {vlan_id} (802.1Q) <-> {target_iface}")
+            info(f"Added: VLAN {vlan_id} (802.1Q) {from_iface} <-> {to_iface}")
 
         if not prompt_yes_no("Add another VLAN pass-through?", default=False):
             break
@@ -1280,11 +1301,11 @@ def phase_confirm(config: RouterConfig) -> bool:
         print("VLAN PASS-THROUGH:")
         for v in config.vlan_passthrough:
             if v.inner_vlan:
-                print(f"  VLAN {v.vlan_id}.{v.inner_vlan} (QinQ) <-> {v.internal_interface}")
+                print(f"  VLAN {v.vlan_id}.{v.inner_vlan} (QinQ) {v.from_interface} <-> {v.to_interface}")
             elif v.vlan_type == "dot1ad":
-                print(f"  S-VLAN {v.vlan_id} (QinQ) <-> {v.internal_interface}")
+                print(f"  S-VLAN {v.vlan_id} (QinQ) {v.from_interface} <-> {v.to_interface}")
             else:
-                print(f"  VLAN {v.vlan_id} (802.1Q) <-> {v.internal_interface}")
+                print(f"  VLAN {v.vlan_id} (802.1Q) {v.from_interface} <-> {v.to_interface}")
 
     if config.loopbacks:
         print()

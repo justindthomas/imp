@@ -154,33 +154,29 @@ ip route add {{ route.destination }} via {{ route.via }}{% if route.interface %}
 # VLAN pass-through (L2 cross-connect between interfaces)
 {% for v in vlan_passthrough %}
 {% if v.inner_vlan %}
-# QinQ VLAN {{ v.vlan_id }}.{{ v.inner_vlan }} <-> {{ v.internal_interface }}
-{# Note: internal_interface field name kept for compatibility #}
-{% set first_iface = interfaces | first %}
-create sub-interface {{ first_iface.name }} {{ v.vlan_id }} inner-dot1q {{ v.inner_vlan }}
-create sub-interface {{ v.internal_interface }} {{ v.vlan_id }} inner-dot1q {{ v.inner_vlan }}
-set interface state {{ first_iface.name }}.{{ v.vlan_id }}.{{ v.inner_vlan }} up
-set interface state {{ v.internal_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }} up
-set interface l2 xconnect {{ first_iface.name }}.{{ v.vlan_id }}.{{ v.inner_vlan }} {{ v.internal_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }}
-set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }} {{ first_iface.name }}.{{ v.vlan_id }}.{{ v.inner_vlan }}
+# QinQ VLAN {{ v.vlan_id }}.{{ v.inner_vlan }} {{ v.from_interface }} <-> {{ v.to_interface }}
+create sub-interface {{ v.from_interface }} {{ v.vlan_id }} inner-dot1q {{ v.inner_vlan }}
+create sub-interface {{ v.to_interface }} {{ v.vlan_id }} inner-dot1q {{ v.inner_vlan }}
+set interface state {{ v.from_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }} up
+set interface state {{ v.to_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }} up
+set interface l2 xconnect {{ v.from_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }} {{ v.to_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }}
+set interface l2 xconnect {{ v.to_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }} {{ v.from_interface }}.{{ v.vlan_id }}.{{ v.inner_vlan }}
 {% elif v.vlan_type == 'dot1ad' %}
-# QinQ S-VLAN {{ v.vlan_id }} (all C-tags) <-> {{ v.internal_interface }}
-{% set first_iface = interfaces | first %}
-create sub-interface {{ first_iface.name }} {{ v.vlan_id }} dot1ad
-create sub-interface {{ v.internal_interface }} {{ v.vlan_id }} dot1ad
-set interface state {{ first_iface.name }}.{{ v.vlan_id }} up
-set interface state {{ v.internal_interface }}.{{ v.vlan_id }} up
-set interface l2 xconnect {{ first_iface.name }}.{{ v.vlan_id }} {{ v.internal_interface }}.{{ v.vlan_id }}
-set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }} {{ first_iface.name }}.{{ v.vlan_id }}
+# QinQ S-VLAN {{ v.vlan_id }} (all C-tags) {{ v.from_interface }} <-> {{ v.to_interface }}
+create sub-interface {{ v.from_interface }} {{ v.vlan_id }} dot1ad
+create sub-interface {{ v.to_interface }} {{ v.vlan_id }} dot1ad
+set interface state {{ v.from_interface }}.{{ v.vlan_id }} up
+set interface state {{ v.to_interface }}.{{ v.vlan_id }} up
+set interface l2 xconnect {{ v.from_interface }}.{{ v.vlan_id }} {{ v.to_interface }}.{{ v.vlan_id }}
+set interface l2 xconnect {{ v.to_interface }}.{{ v.vlan_id }} {{ v.from_interface }}.{{ v.vlan_id }}
 {% else %}
-# 802.1Q VLAN {{ v.vlan_id }} <-> {{ v.internal_interface }}
-{% set first_iface = interfaces | first %}
-create sub-interface {{ first_iface.name }} {{ v.vlan_id }}
-create sub-interface {{ v.internal_interface }} {{ v.vlan_id }}
-set interface state {{ first_iface.name }}.{{ v.vlan_id }} up
-set interface state {{ v.internal_interface }}.{{ v.vlan_id }} up
-set interface l2 xconnect {{ first_iface.name }}.{{ v.vlan_id }} {{ v.internal_interface }}.{{ v.vlan_id }}
-set interface l2 xconnect {{ v.internal_interface }}.{{ v.vlan_id }} {{ first_iface.name }}.{{ v.vlan_id }}
+# 802.1Q VLAN {{ v.vlan_id }} {{ v.from_interface }} <-> {{ v.to_interface }}
+create sub-interface {{ v.from_interface }} {{ v.vlan_id }}
+create sub-interface {{ v.to_interface }} {{ v.vlan_id }}
+set interface state {{ v.from_interface }}.{{ v.vlan_id }} up
+set interface state {{ v.to_interface }}.{{ v.vlan_id }} up
+set interface l2 xconnect {{ v.from_interface }}.{{ v.vlan_id }} {{ v.to_interface }}.{{ v.vlan_id }}
+set interface l2 xconnect {{ v.to_interface }}.{{ v.vlan_id }} {{ v.from_interface }}.{{ v.vlan_id }}
 {% endif %}
 {% endfor %}
 {% endif %}
