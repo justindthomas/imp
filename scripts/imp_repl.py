@@ -1179,6 +1179,62 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                 ctx.dirty = True
                 log(f"Set {iface.vpp_name} as OSPFv3 passive")
                 return True
+            # IPv6 RA commands: "interfaces <name> ipv6-ra enable/disable/interval/suppress"
+            if args[1].lower() == "ipv6-ra" and len(args) >= 3:
+                ra_cmd = args[2].lower()
+                if ra_cmd == "enable":
+                    iface.ipv6_ra_enabled = True
+                    ctx.dirty = True
+                    log(f"Enabled IPv6 RA on {iface.vpp_name}")
+                    return True
+                if ra_cmd == "disable":
+                    iface.ipv6_ra_enabled = False
+                    ctx.dirty = True
+                    log(f"Disabled IPv6 RA on {iface.vpp_name}")
+                    return True
+                if ra_cmd == "suppress":
+                    iface.ipv6_ra_suppress = True
+                    ctx.dirty = True
+                    log(f"Suppressed IPv6 RA on {iface.vpp_name}")
+                    return True
+                if ra_cmd == "no-suppress":
+                    iface.ipv6_ra_suppress = False
+                    ctx.dirty = True
+                    log(f"Enabled IPv6 RA sending on {iface.vpp_name}")
+                    return True
+                if ra_cmd == "interval" and len(args) >= 5:
+                    try:
+                        max_int = int(args[3])
+                        min_int = int(args[4])
+                        iface.ipv6_ra_interval_max = max_int
+                        iface.ipv6_ra_interval_min = min_int
+                        ctx.dirty = True
+                        log(f"Set {iface.vpp_name} RA interval to {max_int}/{min_int}s")
+                        return True
+                    except ValueError:
+                        error("Invalid interval values")
+                        return True
+                if ra_cmd == "prefix" and len(args) >= 4:
+                    prefix_cmd = args[3].lower()
+                    if prefix_cmd == "add" and len(args) >= 5:
+                        prefix = args[4]
+                        if prefix not in iface.ipv6_ra_prefixes:
+                            iface.ipv6_ra_prefixes.append(prefix)
+                            ctx.dirty = True
+                            log(f"Added RA prefix {prefix} to {iface.vpp_name}")
+                        return True
+                    if prefix_cmd == "remove" and len(args) >= 5:
+                        prefix = args[4]
+                        if prefix in iface.ipv6_ra_prefixes:
+                            iface.ipv6_ra_prefixes.remove(prefix)
+                            ctx.dirty = True
+                            log(f"Removed RA prefix {prefix} from {iface.vpp_name}")
+                        return True
+                    if prefix_cmd == "clear":
+                        iface.ipv6_ra_prefixes.clear()
+                        ctx.dirty = True
+                        log(f"Cleared custom RA prefixes on {iface.vpp_name}")
+                        return True
         # Check for external interface with ospf command: "interfaces external ospf area 0"
         if subcommand == "external" and ctx.config.external and len(args) >= 2:
             if args[1].lower() == "ospf" and len(args) >= 4 and args[2].lower() == "area":
@@ -1211,6 +1267,63 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                 ctx.dirty = True
                 log(f"Set external as OSPFv3 passive")
                 return True
+            # IPv6 RA commands for external interface
+            if args[1].lower() == "ipv6-ra" and len(args) >= 3:
+                ra_cmd = args[2].lower()
+                ext = ctx.config.external
+                if ra_cmd == "enable":
+                    ext.ipv6_ra_enabled = True
+                    ctx.dirty = True
+                    log(f"Enabled IPv6 RA on external")
+                    return True
+                if ra_cmd == "disable":
+                    ext.ipv6_ra_enabled = False
+                    ctx.dirty = True
+                    log(f"Disabled IPv6 RA on external")
+                    return True
+                if ra_cmd == "suppress":
+                    ext.ipv6_ra_suppress = True
+                    ctx.dirty = True
+                    log(f"Suppressed IPv6 RA on external")
+                    return True
+                if ra_cmd == "no-suppress":
+                    ext.ipv6_ra_suppress = False
+                    ctx.dirty = True
+                    log(f"Enabled IPv6 RA sending on external")
+                    return True
+                if ra_cmd == "interval" and len(args) >= 5:
+                    try:
+                        max_int = int(args[3])
+                        min_int = int(args[4])
+                        ext.ipv6_ra_interval_max = max_int
+                        ext.ipv6_ra_interval_min = min_int
+                        ctx.dirty = True
+                        log(f"Set external RA interval to {max_int}/{min_int}s")
+                        return True
+                    except ValueError:
+                        error("Invalid interval values")
+                        return True
+                if ra_cmd == "prefix" and len(args) >= 4:
+                    prefix_cmd = args[3].lower()
+                    if prefix_cmd == "add" and len(args) >= 5:
+                        prefix = args[4]
+                        if prefix not in ext.ipv6_ra_prefixes:
+                            ext.ipv6_ra_prefixes.append(prefix)
+                            ctx.dirty = True
+                            log(f"Added RA prefix {prefix} to external")
+                        return True
+                    if prefix_cmd == "remove" and len(args) >= 5:
+                        prefix = args[4]
+                        if prefix in ext.ipv6_ra_prefixes:
+                            ext.ipv6_ra_prefixes.remove(prefix)
+                            ctx.dirty = True
+                            log(f"Removed RA prefix {prefix} from external")
+                        return True
+                    if prefix_cmd == "clear":
+                        ext.ipv6_ra_prefixes.clear()
+                        ctx.dirty = True
+                        log(f"Cleared custom RA prefixes on external")
+                        return True
 
     # Multi-word commands from any level: "loopbacks add", "nat mappings", etc.
     if command == "loopbacks" and args:
@@ -1262,6 +1375,62 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                     ctx.dirty = True
                     log(f"Set loop{instance} as OSPFv3 passive")
                     return True
+                # IPv6 RA commands for loopback
+                if args[1].lower() == "ipv6-ra" and len(args) >= 3:
+                    ra_cmd = args[2].lower()
+                    if ra_cmd == "enable":
+                        loop.ipv6_ra_enabled = True
+                        ctx.dirty = True
+                        log(f"Enabled IPv6 RA on loop{instance}")
+                        return True
+                    if ra_cmd == "disable":
+                        loop.ipv6_ra_enabled = False
+                        ctx.dirty = True
+                        log(f"Disabled IPv6 RA on loop{instance}")
+                        return True
+                    if ra_cmd == "suppress":
+                        loop.ipv6_ra_suppress = True
+                        ctx.dirty = True
+                        log(f"Suppressed IPv6 RA on loop{instance}")
+                        return True
+                    if ra_cmd == "no-suppress":
+                        loop.ipv6_ra_suppress = False
+                        ctx.dirty = True
+                        log(f"Enabled IPv6 RA sending on loop{instance}")
+                        return True
+                    if ra_cmd == "interval" and len(args) >= 5:
+                        try:
+                            max_int = int(args[3])
+                            min_int = int(args[4])
+                            loop.ipv6_ra_interval_max = max_int
+                            loop.ipv6_ra_interval_min = min_int
+                            ctx.dirty = True
+                            log(f"Set loop{instance} RA interval to {max_int}/{min_int}s")
+                            return True
+                        except ValueError:
+                            error("Invalid interval values")
+                            return True
+                    if ra_cmd == "prefix" and len(args) >= 4:
+                        prefix_cmd = args[3].lower()
+                        if prefix_cmd == "add" and len(args) >= 5:
+                            prefix = args[4]
+                            if prefix not in loop.ipv6_ra_prefixes:
+                                loop.ipv6_ra_prefixes.append(prefix)
+                                ctx.dirty = True
+                                log(f"Added RA prefix {prefix} to loop{instance}")
+                            return True
+                        if prefix_cmd == "remove" and len(args) >= 5:
+                            prefix = args[4]
+                            if prefix in loop.ipv6_ra_prefixes:
+                                loop.ipv6_ra_prefixes.remove(prefix)
+                                ctx.dirty = True
+                                log(f"Removed RA prefix {prefix} from loop{instance}")
+                            return True
+                        if prefix_cmd == "clear":
+                            loop.ipv6_ra_prefixes.clear()
+                            ctx.dirty = True
+                            log(f"Cleared custom RA prefixes on loop{instance}")
+                            return True
 
     if command == "bvi" and args:
         subcommand = args[0].lower()
@@ -1309,6 +1478,62 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                     ctx.dirty = True
                     log(f"Set BVI {bridge_id} as OSPFv3 passive")
                     return True
+                # IPv6 RA commands for BVI
+                if args[1].lower() == "ipv6-ra" and len(args) >= 3:
+                    ra_cmd = args[2].lower()
+                    if ra_cmd == "enable":
+                        bvi.ipv6_ra_enabled = True
+                        ctx.dirty = True
+                        log(f"Enabled IPv6 RA on BVI {bridge_id}")
+                        return True
+                    if ra_cmd == "disable":
+                        bvi.ipv6_ra_enabled = False
+                        ctx.dirty = True
+                        log(f"Disabled IPv6 RA on BVI {bridge_id}")
+                        return True
+                    if ra_cmd == "suppress":
+                        bvi.ipv6_ra_suppress = True
+                        ctx.dirty = True
+                        log(f"Suppressed IPv6 RA on BVI {bridge_id}")
+                        return True
+                    if ra_cmd == "no-suppress":
+                        bvi.ipv6_ra_suppress = False
+                        ctx.dirty = True
+                        log(f"Enabled IPv6 RA sending on BVI {bridge_id}")
+                        return True
+                    if ra_cmd == "interval" and len(args) >= 5:
+                        try:
+                            max_int = int(args[3])
+                            min_int = int(args[4])
+                            bvi.ipv6_ra_interval_max = max_int
+                            bvi.ipv6_ra_interval_min = min_int
+                            ctx.dirty = True
+                            log(f"Set BVI {bridge_id} RA interval to {max_int}/{min_int}s")
+                            return True
+                        except ValueError:
+                            error("Invalid interval values")
+                            return True
+                    if ra_cmd == "prefix" and len(args) >= 4:
+                        prefix_cmd = args[3].lower()
+                        if prefix_cmd == "add" and len(args) >= 5:
+                            prefix = args[4]
+                            if prefix not in bvi.ipv6_ra_prefixes:
+                                bvi.ipv6_ra_prefixes.append(prefix)
+                                ctx.dirty = True
+                                log(f"Added RA prefix {prefix} to BVI {bridge_id}")
+                            return True
+                        if prefix_cmd == "remove" and len(args) >= 5:
+                            prefix = args[4]
+                            if prefix in bvi.ipv6_ra_prefixes:
+                                bvi.ipv6_ra_prefixes.remove(prefix)
+                                ctx.dirty = True
+                                log(f"Removed RA prefix {prefix} from BVI {bridge_id}")
+                            return True
+                        if prefix_cmd == "clear":
+                            bvi.ipv6_ra_prefixes.clear()
+                            ctx.dirty = True
+                            log(f"Cleared custom RA prefixes on BVI {bridge_id}")
+                            return True
 
     if command == "vlan-passthrough" and args:
         subcommand = args[0].lower()

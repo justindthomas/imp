@@ -144,11 +144,7 @@ ip route add {{ module.config.bgp_prefix }} via {{ ext_conn.module_ip }} memif{{
 {% endfor %}
 {% endif %}
 
-# Static routes (including defaults)
-{% for route in routes %}
-ip route add {{ route.destination }} via {{ route.via }}{% if route.interface %} {{ route.interface }}{% endif %}
-
-{% endfor %}
+{# Static routes are now managed by FRR and synced to VPP via linux_cp #}
 {% if vlan_passthrough %}
 
 # VLAN pass-through (L2 cross-connect between interfaces)
@@ -180,3 +176,59 @@ set interface l2 xconnect {{ v.to_interface }}.{{ v.vlan_id }} {{ v.from_interfa
 {% endif %}
 {% endfor %}
 {% endif %}
+
+# IPv6 Router Advertisement Configuration
+{% for iface in interfaces %}
+{% if iface.ipv6 and iface.ipv6_ra_enabled %}
+{% set ra_prefixes = iface.ipv6_ra_prefixes if iface.ipv6_ra_prefixes else iface.ipv6_ra_prefixes_auto %}
+# RA on {{ iface.name }}
+ip6 nd {{ iface.name }} ra-interval {{ iface.ipv6_ra_interval_max }} {{ iface.ipv6_ra_interval_min }}
+{% for prefix in ra_prefixes %}
+ip6 nd {{ iface.name }} prefix {{ prefix }} infinite infinite off-link
+{% endfor %}
+{% if not iface.ipv6_ra_suppress %}
+ip6 nd {{ iface.name }} no ra-suppress
+{% endif %}
+{% endif %}
+{% endfor %}
+{% for lo in loopbacks %}
+{% if lo.ipv6 and lo.create_lcp and lo.ipv6_ra_enabled %}
+{% set ra_prefixes = lo.ipv6_ra_prefixes if lo.ipv6_ra_prefixes else [lo.ipv6 ~ '/' ~ lo.ipv6_prefix] %}
+# RA on loop{{ lo.instance }}
+ip6 nd loop{{ lo.instance }} ra-interval {{ lo.ipv6_ra_interval_max }} {{ lo.ipv6_ra_interval_min }}
+{% for prefix in ra_prefixes %}
+ip6 nd loop{{ lo.instance }} prefix {{ prefix }} infinite infinite off-link
+{% endfor %}
+{% if not lo.ipv6_ra_suppress %}
+ip6 nd loop{{ lo.instance }} no ra-suppress
+{% endif %}
+{% endif %}
+{% endfor %}
+{% for bvi in bvi_domains %}
+{% if bvi.ipv6 and bvi.create_lcp and bvi.ipv6_ra_enabled %}
+{% set ra_prefixes = bvi.ipv6_ra_prefixes if bvi.ipv6_ra_prefixes else [bvi.ipv6 ~ '/' ~ bvi.ipv6_prefix] %}
+# RA on bvi{{ bvi.bridge_id }}
+ip6 nd loop{{ bvi.bridge_id }} ra-interval {{ bvi.ipv6_ra_interval_max }} {{ bvi.ipv6_ra_interval_min }}
+{% for prefix in ra_prefixes %}
+ip6 nd loop{{ bvi.bridge_id }} prefix {{ prefix }} infinite infinite off-link
+{% endfor %}
+{% if not bvi.ipv6_ra_suppress %}
+ip6 nd loop{{ bvi.bridge_id }} no ra-suppress
+{% endif %}
+{% endif %}
+{% endfor %}
+{% for iface in interfaces %}
+{% for sub in iface.subinterfaces %}
+{% if sub.ipv6 and sub.create_lcp and sub.ipv6_ra_enabled %}
+{% set ra_prefixes = sub.ipv6_ra_prefixes if sub.ipv6_ra_prefixes else [sub.ipv6 ~ '/' ~ sub.ipv6_prefix] %}
+# RA on {{ iface.name }}.{{ sub.vlan_id }}
+ip6 nd {{ iface.name }}.{{ sub.vlan_id }} ra-interval {{ sub.ipv6_ra_interval_max }} {{ sub.ipv6_ra_interval_min }}
+{% for prefix in ra_prefixes %}
+ip6 nd {{ iface.name }}.{{ sub.vlan_id }} prefix {{ prefix }} infinite infinite off-link
+{% endfor %}
+{% if not sub.ipv6_ra_suppress %}
+ip6 nd {{ iface.name }}.{{ sub.vlan_id }} no ra-suppress
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endfor %}

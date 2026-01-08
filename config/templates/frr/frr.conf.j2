@@ -24,6 +24,16 @@ ipv6 route {{ prefix }} {{ conn.module_ip }} memif-{{ module.name }}-{{ adv.via_
 ipv6 route {{ network }} blackhole
 {% endfor %}
 {% endfor %}
+{# User-defined static routes #}
+{% for route in routes %}
+{% if ':' in route.destination %}
+ipv6 route {{ route.destination }} {{ route.via }}{% if route.interface %} {{ route.interface }}{% endif %}
+
+{% else %}
+ip route {{ route.destination }} {{ route.via }}{% if route.interface %} {{ route.interface }}{% endif %}
+
+{% endif %}
+{% endfor %}
 !
 {% if bgp.enabled %}
 router bgp {{ bgp.asn }}

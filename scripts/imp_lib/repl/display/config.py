@@ -75,6 +75,16 @@ def show_interface_detail(iface) -> None:
     if iface.ospf6_area is not None:
         passive = " (passive)" if iface.ospf6_passive else ""
         print(f"  OSPFv3:    area {iface.ospf6_area}{passive}")
+    # IPv6 RA configuration (only show if IPv6 is configured)
+    if iface.ipv6:
+        if iface.ipv6_ra_enabled:
+            status = "suppressed" if iface.ipv6_ra_suppress else "active"
+            print(f"  IPv6 RA:   {status} ({iface.ipv6_ra_interval_max}/{iface.ipv6_ra_interval_min}s)")
+            if iface.ipv6_ra_prefixes:
+                for p in iface.ipv6_ra_prefixes:
+                    print(f"             custom prefix: {p}")
+        else:
+            print(f"  IPv6 RA:   disabled")
     print()
     if iface.subinterfaces:
         print("Sub-interfaces:")
@@ -87,7 +97,7 @@ def show_interface_detail(iface) -> None:
             lcp = " (LCP)" if sub.create_lcp else ""
             print(f"  .{sub.vlan_id}: {', '.join(ips)}{lcp}")
         print()
-    print("Commands: set-ipv4, set-ipv6, set-mtu, subinterfaces, ospf, ospf6")
+    print("Commands: set-ipv4, set-ipv6, set-mtu, subinterfaces, ospf, ospf6, ipv6-ra")
     print()
 
 

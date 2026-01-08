@@ -915,26 +915,31 @@ class CommandGenerator:
             self.vpp_core_batch.commands.extend(cmds)
 
     def _gen_route_commands(self, change: ConfigChange) -> None:
-        """Generate VPP commands for static route changes."""
+        """Generate FRR commands for static route changes.
+
+        Routes are managed by FRR and synced to VPP via linux_cp.
+        """
         if change.identifier == "default-v4":
             if change.change_type == ChangeType.MODIFY:
                 old_gw = change.old_value['gateway']
                 new_gw = change.new_value['gateway']
-                self.vpp_core_batch.commands.extend([
-                    f"ip route del 0.0.0.0/0",
-                    f"ip route add 0.0.0.0/0 via {new_gw} external",
+                self.frr_batch.commands.extend([
+                    f"no ip route 0.0.0.0/0 {old_gw}",
+                    f"ip route 0.0.0.0/0 {new_gw}",
                 ])
         elif change.identifier == "default-v6":
             if change.change_type == ChangeType.ADD:
                 new_gw = change.new_value['gateway']
-                self.vpp_core_batch.commands.append(f"ip route add ::/0 via {new_gw} external")
+                self.frr_batch.commands.append(f"ipv6 route ::/0 {new_gw}")
             elif change.change_type == ChangeType.DELETE:
-                self.vpp_core_batch.commands.append(f"ip route del ::/0")
+                old_gw = change.old_value['gateway']
+                self.frr_batch.commands.append(f"no ipv6 route ::/0 {old_gw}")
             elif change.change_type == ChangeType.MODIFY:
+                old_gw = change.old_value['gateway']
                 new_gw = change.new_value['gateway']
-                self.vpp_core_batch.commands.extend([
-                    f"ip route del ::/0",
-                    f"ip route add ::/0 via {new_gw} external",
+                self.frr_batch.commands.extend([
+                    f"no ipv6 route ::/0 {old_gw}",
+                    f"ipv6 route ::/0 {new_gw}",
                 ])
 
     def _gen_nat_mapping_commands(self, change: ConfigChange) -> None:

@@ -644,7 +644,7 @@ EOF
     chmod +x "$ROOTFS/usr/local/bin/imp_agent.py"
 
     # Install imp_lib package to Python site-packages
-    local PYTHON_SITEPKG="$ROOTFS/usr/local/lib/python3/dist-packages"
+    PYTHON_SITEPKG="$ROOTFS/usr/local/lib/python3/dist-packages"
     mkdir -p "$PYTHON_SITEPKG"
     cp -r "$SCRIPT_DIR/imp_lib" "$PYTHON_SITEPKG/"
 

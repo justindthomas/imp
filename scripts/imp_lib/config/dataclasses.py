@@ -33,6 +33,12 @@ class SubInterface:
     ospf_passive: bool = False  # Passive interface (no hellos)
     ospf6_area: Optional[int] = None  # OSPFv3 area (None = not participating)
     ospf6_passive: bool = False  # Passive for OSPFv3
+    # IPv6 Router Advertisement settings
+    ipv6_ra_enabled: bool = True  # Send RAs (if IPv6 configured and LCP created)
+    ipv6_ra_interval_max: int = 30  # Max RA interval in seconds
+    ipv6_ra_interval_min: int = 15  # Min RA interval in seconds
+    ipv6_ra_suppress: bool = False  # Suppress RAs (keep config but don't send)
+    ipv6_ra_prefixes: list[str] = field(default_factory=list)  # Custom prefixes (empty = auto from IPv6)
 
 
 @dataclass
@@ -50,6 +56,12 @@ class LoopbackInterface:
     ospf_passive: bool = False  # Passive interface (no hellos)
     ospf6_area: Optional[int] = None  # OSPFv3 area (None = not participating)
     ospf6_passive: bool = False  # Passive for OSPFv3
+    # IPv6 Router Advertisement settings
+    ipv6_ra_enabled: bool = True  # Send RAs (if IPv6 configured and LCP created)
+    ipv6_ra_interval_max: int = 30  # Max RA interval in seconds
+    ipv6_ra_interval_min: int = 15  # Min RA interval in seconds
+    ipv6_ra_suppress: bool = False  # Suppress RAs (keep config but don't send)
+    ipv6_ra_prefixes: list[str] = field(default_factory=list)  # Custom prefixes (empty = auto from IPv6)
 
 
 @dataclass
@@ -75,6 +87,12 @@ class BVIConfig:
     ospf_passive: bool = False  # Passive interface (no hellos)
     ospf6_area: Optional[int] = None  # OSPFv3 area (None = not participating)
     ospf6_passive: bool = False  # Passive for OSPFv3
+    # IPv6 Router Advertisement settings
+    ipv6_ra_enabled: bool = True  # Send RAs (if IPv6 configured and LCP created)
+    ipv6_ra_interval_max: int = 30  # Max RA interval in seconds
+    ipv6_ra_interval_min: int = 15  # Min RA interval in seconds
+    ipv6_ra_suppress: bool = False  # Suppress RAs (keep config but don't send)
+    ipv6_ra_prefixes: list[str] = field(default_factory=list)  # Custom prefixes (empty = auto from IPv6)
 
 
 @dataclass
@@ -107,6 +125,13 @@ class Interface:
     ospf6_area: Optional[int] = None
     ospf6_passive: bool = False
 
+    # IPv6 Router Advertisement settings
+    ipv6_ra_enabled: bool = True  # Send RAs (if IPv6 configured)
+    ipv6_ra_interval_max: int = 30  # Max RA interval in seconds
+    ipv6_ra_interval_min: int = 15  # Min RA interval in seconds
+    ipv6_ra_suppress: bool = False  # Suppress RAs (keep config but don't send)
+    ipv6_ra_prefixes: list[str] = field(default_factory=list)  # Custom prefixes (empty = auto from IPv6)
+
     @property
     def vpp_name(self) -> str:
         """VPP interface name is the user-defined name."""
@@ -131,14 +156,19 @@ class Interface:
         return result
 
     @property
-    def ipv6_ra_prefixes(self) -> list[str]:
-        """Compute /64 RA prefixes from IPv6 addresses."""
+    def ipv6_ra_prefixes_auto(self) -> list[str]:
+        """Compute /64 RA prefixes from IPv6 addresses (used when ipv6_ra_prefixes is empty)."""
         result = []
         for addr in self.ipv6:
             addr6 = ipaddress.IPv6Address(addr.address)
             net64 = ipaddress.IPv6Network(f"{addr6}/64", strict=False)
             result.append(str(net64))
         return result
+
+    @property
+    def ipv6_ra_prefixes_effective(self) -> list[str]:
+        """Get effective RA prefixes (custom if set, otherwise auto-computed)."""
+        return self.ipv6_ra_prefixes if self.ipv6_ra_prefixes else self.ipv6_ra_prefixes_auto
 
 
 @dataclass

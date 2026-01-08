@@ -82,6 +82,12 @@ def load_config(config_file: Path) -> RouterConfig:
             ospf_passive=iface_data.get('ospf_passive', False),
             ospf6_area=iface_data.get('ospf6_area'),
             ospf6_passive=iface_data.get('ospf6_passive', False),
+            # IPv6 RA settings
+            ipv6_ra_enabled=iface_data.get('ipv6_ra_enabled', True),
+            ipv6_ra_interval_max=iface_data.get('ipv6_ra_interval_max', 30),
+            ipv6_ra_interval_min=iface_data.get('ipv6_ra_interval_min', 15),
+            ipv6_ra_suppress=iface_data.get('ipv6_ra_suppress', False),
+            ipv6_ra_prefixes=iface_data.get('ipv6_ra_prefixes', []),
         ))
 
     # Load routes
@@ -114,6 +120,12 @@ def load_config(config_file: Path) -> RouterConfig:
             ospf_passive=bvi_data.get('ospf_passive', False),
             ospf6_area=bvi_data.get('ospf6_area'),
             ospf6_passive=bvi_data.get('ospf6_passive', False),
+            # IPv6 RA settings
+            ipv6_ra_enabled=bvi_data.get('ipv6_ra_enabled', True),
+            ipv6_ra_interval_max=bvi_data.get('ipv6_ra_interval_max', 30),
+            ipv6_ra_interval_min=bvi_data.get('ipv6_ra_interval_min', 15),
+            ipv6_ra_suppress=bvi_data.get('ipv6_ra_suppress', False),
+            ipv6_ra_prefixes=bvi_data.get('ipv6_ra_prefixes', []),
         ))
 
     # Always re-detect CPU allocation for current hardware
