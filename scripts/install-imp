@@ -758,7 +758,22 @@ zgenhostid -f -o "${ROOTFS}/etc/hostid"
 log "Installing zfsbootmenu..."
 
 mkdir -p "$ROOTFS/boot/efi/EFI/ZBM"
-curl -L https://get.zfsbootmenu.org/efi -o "$ROOTFS/boot/efi/EFI/ZBM/zfsbootmenu.efi"
+ZBM_EFI="$ROOTFS/boot/efi/EFI/ZBM/zfsbootmenu.efi"
+if ! curl -fL --retry 3 --retry-delay 5 https://get.zfsbootmenu.org/efi -o "$ZBM_EFI"; then
+    error "Failed to download zfsbootmenu EFI binary"
+fi
+
+# Verify the download succeeded (should be ~15-20MB)
+ZBM_SIZE=$(stat -f%z "$ZBM_EFI" 2>/dev/null || stat -c%s "$ZBM_EFI" 2>/dev/null || echo 0)
+if [[ "$ZBM_SIZE" -lt 1000000 ]]; then
+    error "zfsbootmenu download appears corrupted (size: $ZBM_SIZE bytes)"
+fi
+log "Downloaded zfsbootmenu ($((ZBM_SIZE / 1024 / 1024))MB)"
+
+# Also copy to UEFI fallback path for VMs and systems that don't persist NVRAM
+mkdir -p "$ROOTFS/boot/efi/EFI/BOOT"
+cp "$ZBM_EFI" "$ROOTFS/boot/efi/EFI/BOOT/BOOTX64.EFI"
+log "Installed zfsbootmenu to fallback path EFI/BOOT/BOOTX64.EFI"
 
 # Remove any existing ZFSBootMenu entries to avoid duplicates
 log "Cleaning up existing ZFSBootMenu EFI entries..."
