@@ -422,12 +422,14 @@ If you need to manually edit configuration files:
 |------|---------|
 | `/etc/vpp/startup-core.conf` | VPP startup config, PCI addresses |
 | `/etc/vpp/commands-core.txt` | VPP runtime config, IPs, routes, ACLs |
-| `/etc/vpp/commands-nat.txt` | NAT pool mappings |
-| `/etc/frr/frr.conf` | BGP configuration |
+| `/etc/vpp/startup-{module}.conf` | Module VPP startup config (e.g., `startup-nat.conf`) |
+| `/etc/vpp/commands-{module}.txt` | Module commands (e.g., `commands-nat.txt`) |
+| `/etc/frr/frr.conf` | FRR configuration (BGP, OSPF, static routes) |
 | `/etc/systemd/system/netns-move-interfaces.service` | Interface names to move |
 
 After making manual changes, restart services:
 ```bash
+# Restart core and all enabled modules
 systemctl restart vpp-core vpp-nat frr
 ```
 
@@ -478,7 +480,7 @@ imp status
 # Or check individual services
 systemctl status netns-dataplane
 systemctl status vpp-core
-systemctl status vpp-nat
+systemctl status vpp-nat    # If NAT module is enabled
 systemctl status frr
 ```
 

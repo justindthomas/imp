@@ -15,6 +15,7 @@ This package contains command handler functions organized by feature area:
 
 # CRUD operations
 from .crud import (
+    find_module,
     prompt_value,
     prompt_yes_no,
     cmd_loopback_add,
@@ -28,16 +29,6 @@ from .crud import (
     cmd_subinterface_delete,
 )
 
-# NAT operations
-from .nat import (
-    find_module,
-    ensure_nat_module,
-    cmd_nat_mapping_add,
-    cmd_nat_mapping_delete,
-    cmd_nat_bypass_add,
-    cmd_nat_bypass_delete,
-    cmd_nat_set_prefix,
-)
 
 # Routing operations
 from .routing import (
@@ -107,11 +98,8 @@ __all__ = [
     'cmd_bvi_add', 'cmd_bvi_delete',
     'cmd_vlan_passthrough_add', 'cmd_vlan_passthrough_delete',
     'cmd_subinterface_add', 'cmd_subinterface_delete',
-    # NAT
-    'find_module', 'ensure_nat_module',
-    'cmd_nat_mapping_add', 'cmd_nat_mapping_delete',
-    'cmd_nat_bypass_add', 'cmd_nat_bypass_delete',
-    'cmd_nat_set_prefix',
+    # Module helpers
+    'find_module',
     # Routing
     'cmd_bgp_enable', 'cmd_bgp_disable',
     'cmd_bgp_peers_list', 'cmd_bgp_peers_add', 'cmd_bgp_peers_remove',

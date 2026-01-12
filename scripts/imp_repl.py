@@ -51,9 +51,6 @@ from imp_lib.repl.display import (
     show_bgp as _show_bgp,
     show_ospf as _show_ospf,
     show_ospf6 as _show_ospf6,
-    show_nat as _show_nat,
-    show_nat_mappings as _show_nat_mappings,
-    show_nat_bypass as _show_nat_bypass,
     show_containers as _show_containers,
     show_cpu as _show_cpu,
     show_live_interfaces as _show_live_interfaces,
@@ -84,11 +81,8 @@ from imp_lib.repl.commands import (
     cmd_bvi_add, cmd_bvi_delete,
     cmd_vlan_passthrough_add, cmd_vlan_passthrough_delete,
     cmd_subinterface_add, cmd_subinterface_delete,
-    # NAT
-    find_module, ensure_nat_module,
-    cmd_nat_mapping_add, cmd_nat_mapping_delete,
-    cmd_nat_bypass_add, cmd_nat_bypass_delete,
-    cmd_nat_set_prefix,
+    # Module helpers
+    find_module,
     # Routing
     cmd_bgp_enable, cmd_bgp_disable,
     cmd_bgp_peers_list, cmd_bgp_peers_add, cmd_bgp_peers_remove,
@@ -611,15 +605,6 @@ def cmd_show(ctx: MenuContext, args: list[str]) -> None:
 
     elif path == ["routing", "ospf6"]:
         _show_ospf6(config)
-
-    elif path == ["nat"]:
-        _show_nat(config)
-
-    elif path == ["nat", "mappings"]:
-        _show_nat_mappings(config)
-
-    elif path == ["nat", "bypass"]:
-        _show_nat_bypass(config)
 
     elif path == ["containers"]:
         _show_containers(config)
@@ -1547,43 +1532,6 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_vlan_passthrough_delete(ctx, args[1:])
             return True
 
-    # NAT multi-word commands: "nat mappings list", "nat bypass add", etc.
-    if command == "nat" and args:
-        subcommand = args[0].lower()
-        if subcommand == "set-prefix":
-            cmd_nat_set_prefix(ctx, args[1:])
-            return True
-        if subcommand == "mappings":
-            if len(args) > 1:
-                subcmd = args[1].lower()
-                if subcmd == "list":
-                    _show_nat_mappings(ctx.config)
-                    return True
-                if subcmd == "add":
-                    cmd_nat_mapping_add(ctx, args[2:])
-                    return True
-                if subcmd == "delete":
-                    cmd_nat_mapping_delete(ctx, args[2:])
-                    return True
-            # Just "nat mappings" - navigate there
-            ctx.path = ["nat", "mappings"]
-            return True
-        if subcommand == "bypass":
-            if len(args) > 1:
-                subcmd = args[1].lower()
-                if subcmd == "list":
-                    _show_nat_bypass(ctx.config)
-                    return True
-                if subcmd == "add":
-                    cmd_nat_bypass_add(ctx, args[2:])
-                    return True
-                if subcmd == "delete":
-                    cmd_nat_bypass_delete(ctx, args[2:])
-                    return True
-            # Just "nat bypass" - navigate there
-            ctx.path = ["nat", "bypass"]
-            return True
-
     # BGP multi-word commands: "routing bgp enable", "routing bgp peers add", etc.
     if command == "routing" and args:
         subcommand = args[0].lower()
@@ -1746,7 +1694,7 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_modules_disable(ctx, args)
             return True
 
-    # Multi-word shortcuts for modules: "config modules install nat"
+    # Multi-word shortcuts for modules: "config modules install nat", "config modules nat mappings add"
     if command == "modules" and args:
         subcmd = args[0].lower()
         if subcmd == "available":
@@ -1765,16 +1713,36 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_modules_disable(ctx, args[1:])
             return True
 
-    # Generic module commands - check if first path element is a module name
-    if config_path and MODULE_LOADER_AVAILABLE:
-        module_name = config_path[0]
+        # Module-specific commands: "modules nat mappings add", "modules nat set-prefix"
+        if MODULE_LOADER_AVAILABLE:
+            module_name = subcmd  # e.g., "nat"
+            module_cmds = get_module_commands(module_name)
+            if module_cmds:
+                # Build command path from remaining args
+                # e.g., args=["nat", "mappings", "add"] -> cmd_path="mappings/add"
+                # e.g., args=["nat", "set-prefix"] -> cmd_path="set-prefix"
+                remaining_args = args[1:]
+                if remaining_args:
+                    cmd_path = "/".join(remaining_args)
+                    for mod_cmd in module_cmds:
+                        if mod_cmd.path == cmd_path:
+                            execute_module_command(ctx, module_name, mod_cmd)
+                            return True
+                else:
+                    # Just "modules nat" - navigate there
+                    ctx.path = ["modules", module_name]
+                    return True
+
+    # Generic module commands - config modules <module-name> <command>
+    # e.g., config_path=["modules", "nat"], command="set-prefix" -> "set-prefix"
+    # e.g., config_path=["modules", "nat", "mappings"], command="add" -> "mappings/add"
+    if len(config_path) >= 2 and config_path[0] == "modules" and MODULE_LOADER_AVAILABLE:
+        module_name = config_path[1]
         # Try to load module commands
         module_cmds = get_module_commands(module_name)
         if module_cmds:
             # Build command path from remaining path elements + command
-            # e.g., config_path=["nat", "mappings"], command="add" -> "mappings/add"
-            # e.g., config_path=["nat"], command="set-prefix" -> "set-prefix"
-            path_parts = config_path[1:] + [command]
+            path_parts = config_path[2:] + [command]
             cmd_path = "/".join(path_parts)
 
             # Find matching command
@@ -1786,39 +1754,11 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             # Also try without command if command is a subpath
             # e.g., "mappings" command with "add" arg -> try "mappings/add"
             if args:
-                cmd_path_with_arg = "/".join(config_path[1:] + [command, args[0]])
+                cmd_path_with_arg = "/".join(config_path[2:] + [command, args[0]])
                 for mod_cmd in module_cmds:
                     if mod_cmd.path == cmd_path_with_arg:
                         execute_module_command(ctx, module_name, mod_cmd)
                         return True
-
-    # Legacy NAT commands (kept for backwards compatibility, will use generic above first)
-    if config_path == ["nat"]:
-        if command == "set-prefix":
-            cmd_nat_set_prefix(ctx, args)
-            return True
-
-    if config_path == ["nat", "mappings"]:
-        if command == "list":
-            _show_nat_mappings(ctx.config)
-            return True
-        if command == "add":
-            cmd_nat_mapping_add(ctx, args)
-            return True
-        if command == "delete":
-            cmd_nat_mapping_delete(ctx, args)
-            return True
-
-    if config_path == ["nat", "bypass"]:
-        if command == "list":
-            _show_nat_bypass(ctx.config)
-            return True
-        if command == "add":
-            cmd_nat_bypass_add(ctx, args)
-            return True
-        if command == "delete":
-            cmd_nat_bypass_delete(ctx, args)
-            return True
 
     # BGP commands (under config)
     if config_path == ["routing", "bgp"]:

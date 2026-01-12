@@ -126,7 +126,7 @@ class MenuCompleter(Completer):
                 # Return show commands for the specific module
                 return self._get_module_show_commands(cmd_prefix[2])
             if cmd_prefix == ["show", "config"]:
-                return ["interfaces", "loopbacks", "bvi", "vlan-passthrough", "routing", "nat", "containers", "cpu"]
+                return ["interfaces", "loopbacks", "bvi", "vlan-passthrough", "routing", "modules", "containers", "cpu"]
 
         # Navigate to the menu at this effective path
         menu = self._get_menu_at_path(effective_path)
@@ -212,5 +212,43 @@ class MenuCompleter(Completer):
             if effective_path[2] == "delete" and self.ctx.config:
                 for v in self.ctx.config.vlan_passthrough:
                     completions.append(str(v.vlan_id))
+
+        # Dynamic module completions
+        if effective_path == ["config", "modules"] and self.ctx.config:
+            # Show installed module names
+            for mod in self.ctx.config.modules:
+                if mod.get("name"):
+                    completions.append(mod["name"])
+
+        if len(effective_path) >= 3 and effective_path[:2] == ["config", "modules"] and MODULE_LOADER_AVAILABLE:
+            # Inside a module - show commands from module definition
+            module_name = effective_path[2]
+            # Current subpath within module: ["config", "modules", "nat", "mappings"] -> ["mappings"]
+            module_subpath = effective_path[3:]
+
+            try:
+                mod_def = load_module_definition(module_name)
+
+                # Build prefix to match against command paths
+                prefix = "/".join(module_subpath) + "/" if module_subpath else ""
+
+                # Find matching commands
+                matching_cmds = set()
+                for cmd in mod_def.cli_commands:
+                    if prefix:
+                        # We're in a subpath - show matching suffixes
+                        if cmd.path.startswith(prefix):
+                            # "mappings/add" with prefix "mappings/" -> "add"
+                            remaining = cmd.path[len(prefix):]
+                            if "/" not in remaining:
+                                matching_cmds.add(remaining)
+                    else:
+                        # At module root - show top-level command parts
+                        first_part = cmd.path.split("/")[0]
+                        matching_cmds.add(first_part)
+
+                completions.extend(matching_cmds)
+            except Exception:
+                pass
 
         return list(set(completions))  # Remove duplicates

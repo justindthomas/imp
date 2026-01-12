@@ -42,23 +42,26 @@ imp-build/
 │   │   │   ├── netns-dataplane.service
 │   │   │   ├── vpp-core.service
 │   │   │   ├── vpp-core-config.service
-│   │   │   ├── vpp-nat.service
 │   │   │   └── incus-dataplane.service
-│   │   └── vpp/
-│   │       └── startup-nat.conf  # Static: NAT instance startup
+│   │   │   # Note: vpp-{module}.service files are generated dynamically
 │   ├── templates/                # Jinja2 templates for configure-router.py
 │   │   ├── vpp/
 │   │   │   ├── startup-core.conf.j2
 │   │   │   ├── commands-core.txt.j2
-│   │   │   └── commands-nat.txt.j2
+│   │   │   ├── startup-module.conf.j2   # Template for module VPP startup
+│   │   │   └── commands-module.txt.j2   # Template for module VPP commands
 │   │   ├── frr/
 │   │   │   └── frr.conf.j2
 │   │   ├── systemd/
 │   │   │   ├── netns-move-interfaces.service.j2
-│   │   │   └── management.network.j2
+│   │   │   ├── management.network.j2
+│   │   │   └── vpp-module.service.j2    # Template for module services
 │   │   └── scripts/
 │   │       ├── vpp-core-config.sh.j2
 │   │       └── incus-networking.sh.j2
+│   ├── module-examples/          # Module definitions (YAML)
+│   │   ├── nat.yaml              # Deterministic NAT44 (det44)
+│   │   └── nat64.yaml            # NAT64 translation
 │   └── usr/local/bin/
 │       ├── incus-init.sh         # Static: Incus initialization
 │       └── wait-for-iface-load   # Static: Interface wait helper
@@ -211,22 +214,24 @@ The interactive configuration runs through 7 phases:
 ### Static vs Generated Files
 
 **Static files** (copied during install, never change):
-- `/etc/vpp/startup-nat.conf` — NAT instance startup config
 - `/etc/frr/daemons` — Which FRR daemons to run
 - `/etc/frr/vtysh.conf` — vtysh shell settings
-- `/etc/systemd/system/*.service` — Service unit files (except netns-move-interfaces)
+- `/etc/systemd/system/vpp-core.service` — VPP core service unit
+- `/etc/systemd/system/netns-dataplane.service` — Dataplane namespace service
 
-**Generated files** (created by configure-router.py):
+**Generated files** (created by configure-router.py or imp apply):
 
 | File | Template | Purpose |
 |------|----------|---------|
 | `/etc/vpp/startup-core.conf` | `startup-core.conf.j2` | VPP core startup, PCI addresses |
 | `/etc/vpp/commands-core.txt` | `commands-core.txt.j2` | VPP interfaces, IPs, routes, ACLs |
-| `/etc/vpp/commands-nat.txt` | `commands-nat.txt.j2` | NAT pool mappings |
-| `/etc/frr/frr.conf` | `frr.conf.j2` | BGP configuration |
+| `/etc/vpp/startup-{module}.conf` | `startup-module.conf.j2` | Module VPP startup config |
+| `/etc/vpp/commands-{module}.txt` | `commands-module.txt.j2` | Module VPP commands |
+| `/etc/systemd/system/vpp-{module}.service` | `vpp-module.service.j2` | Module service unit |
+| `/etc/frr/frr.conf` | `frr.conf.j2` | FRR configuration (BGP, OSPF, static routes) |
 | `/etc/systemd/system/netns-move-interfaces.service` | `netns-move-interfaces.service.j2` | Interface names to move |
 | `/etc/systemd/network/10-management.network` | `management.network.j2` | Management interface config |
-| `/usr/local/bin/vpp-core-config.sh` | `vpp-core-config.sh.j2` | IPv6 RA configuration |
+| `/usr/local/bin/vpp-core-config.sh` | `vpp-core-config.sh.j2` | Post-VPP configuration |
 | `/usr/local/bin/incus-networking.sh` | `incus-networking.sh.j2` | Container bridge setup |
 
 ### Service Enable Flow
@@ -234,9 +239,10 @@ The interactive configuration runs through 7 phases:
 On fresh install, only basic services are enabled:
 - `systemd-networkd`, `systemd-resolved`, `ssh`
 
-After running `configure-router.py`, dataplane services are enabled:
+After running `configure-router.py` or `imp apply`, dataplane services are enabled:
 - `netns-dataplane`, `netns-move-interfaces`
-- `vpp-core`, `vpp-core-config`, `vpp-nat`
+- `vpp-core`, `vpp-core-config`
+- `vpp-{module}` (for each enabled module, e.g., `vpp-nat`)
 - `frr`, `incus-dataplane`
 
 This ensures the system boots to a usable state (SSH accessible) before configuration.

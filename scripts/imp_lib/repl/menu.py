@@ -48,13 +48,7 @@ def build_menu_tree() -> dict:
                         },
                         "modules": {
                             "commands": ["available", "list", "install", "enable", "disable"],
-                        },
-                        "nat": {
-                            "children": {
-                                "mappings": {"commands": ["list", "add", "delete"]},
-                                "bypass": {"commands": ["list", "add", "delete"]},
-                            },
-                            "commands": ["show", "set-prefix"],
+                            # Module-specific commands are dynamic: config modules <name> <command>
                         },
                         "containers": {
                             "commands": ["show", "set"],

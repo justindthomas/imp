@@ -1147,9 +1147,28 @@ def apply_configs(output_dir: Path, quiet: bool = False) -> None:
             shutil.copy2(src_path, dst_path)
 
     # Module systemd services
+    # Track which modules should be enabled (only those with generated service files)
+    enabled_module_services = set()
     for src_path in output_dir.glob("vpp-*.service"):
         dst_path = Path("/etc/systemd/system") / src_path.name
         shutil.copy2(src_path, dst_path)
+        enabled_module_services.add(src_path.stem)  # e.g., "vpp-nat"
+
+    # Find existing module services that should be disabled (no longer generated)
+    systemd_dir = Path("/etc/systemd/system")
+    for service_file in systemd_dir.glob("vpp-*.service"):
+        # Skip vpp-core* services (not dynamically managed)
+        if service_file.name.startswith("vpp-core"):
+            continue
+        service_name = service_file.stem
+        if service_name not in enabled_module_services:
+            # Module was disabled - stop, disable, and remove service
+            subprocess.run(["systemctl", "stop", service_name], check=False)
+            subprocess.run(["systemctl", "disable", service_name], check=False)
+            service_file.unlink(missing_ok=True)
+            # Also remove corresponding config files
+            (Path("/etc/vpp") / f"startup-{service_name.replace('vpp-', '')}.conf").unlink(missing_ok=True)
+            (Path("/etc/vpp") / f"commands-{service_name.replace('vpp-', '')}.txt").unlink(missing_ok=True)
 
     # Fix FRR permissions
     subprocess.run(["chown", "-R", "frr:frr", "/etc/frr"], check=False)
@@ -1157,6 +1176,10 @@ def apply_configs(output_dir: Path, quiet: bool = False) -> None:
 
     # Reload systemd
     subprocess.run(["systemctl", "daemon-reload"], check=True)
+
+    # Enable module services for enabled modules
+    for service_name in enabled_module_services:
+        subprocess.run(["systemctl", "enable", service_name], check=False)
 
     if not quiet:
         log("Configuration applied")

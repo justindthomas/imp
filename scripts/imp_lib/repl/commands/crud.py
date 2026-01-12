@@ -19,6 +19,16 @@ from imp_lib.config import (
 )
 
 
+def find_module(config, name: str):
+    """Find module dict by name in config.modules list."""
+    if not config or not hasattr(config, 'modules') or not config.modules:
+        return None
+    for module in config.modules:
+        if module.get('name') == name:
+            return module
+    return None
+
+
 def prompt_value(prompt: str, validator=None, required: bool = True, default: str = None) -> Optional[str]:
     """Prompt for a value with optional validation."""
     while True:
