@@ -157,7 +157,7 @@ def build_tools() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "get_bgp_config",
-                "description": "Get BGP configuration including ASN, router ID, and all configured peers. Check this before adding or removing peers.",
+                "description": "Get BGP configuration including ASN, router ID, announced prefixes, and all configured peers. Check this before modifying BGP settings.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -543,11 +543,45 @@ def build_tools() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "disable_bgp",
-                "description": "Disable BGP and remove all peers",
+                "description": "Disable BGP and remove all peers and announced prefixes",
                 "parameters": {
                     "type": "object",
                     "properties": {},
                     "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "add_bgp_prefix",
+                "description": "Add a prefix to announce via BGP. Use this to originate routes for your IP address space. BGP must be enabled first.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prefix": {
+                            "type": "string",
+                            "description": "Prefix to announce in CIDR notation (e.g., '23.177.24.0/24' or '2001:db8::/32')"
+                        }
+                    },
+                    "required": ["prefix"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "remove_bgp_prefix",
+                "description": "Remove a prefix from BGP announcements",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prefix": {
+                            "type": "string",
+                            "description": "Prefix to stop announcing"
+                        }
+                    },
+                    "required": ["prefix"]
                 }
             }
         },

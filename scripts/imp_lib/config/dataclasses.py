@@ -205,6 +205,7 @@ class BGPConfig:
     enabled: bool = False
     asn: Optional[int] = None  # Local AS number
     router_id: Optional[str] = None  # BGP router-id
+    announced_prefixes: list[str] = field(default_factory=list)  # Prefixes to originate
     peers: list[BGPPeer] = field(default_factory=list)  # Multiple peers
 
 

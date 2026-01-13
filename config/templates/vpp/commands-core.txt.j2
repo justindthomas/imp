@@ -131,14 +131,13 @@ abf attach ip6 policy {{ abf_id.value }} {{ iface.name }}
 
 # Routes for module return traffic
 {% for module in modules if module.enabled %}
-{% for conn in module.connections if conn.create_lcp %}
-{# Routes for return traffic from modules - only if LCP created for FRR visibility #}
-{% endfor %}
-{% if module.config.bgp_prefix is defined %}
-# Route for {{ module.name }} pool (via module)
+{% if module.name == 'nat' and module.config.mappings is defined %}
+# Routes for NAT pool return traffic (via NAT module)
 {% set ext_conn = module.connections | selectattr('name', 'eq', 'external') | first %}
 {% if ext_conn %}
-ip route add {{ module.config.bgp_prefix }} via {{ ext_conn.module_ip }} memif{{ ext_conn.socket_id }}/0
+{% for mapping in module.config.mappings %}
+ip route add {{ mapping.nat_pool }} via {{ ext_conn.module_ip }} memif{{ ext_conn.socket_id }}/0
+{% endfor %}
 {% endif %}
 {% endif %}
 {% endfor %}

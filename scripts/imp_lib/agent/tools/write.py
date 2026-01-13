@@ -392,14 +392,72 @@ def tool_remove_bgp_peer(config, ctx, peer_ip: str) -> str:
 
 
 def tool_disable_bgp(config, ctx) -> str:
-    """Disable BGP and remove all peers."""
+    """Disable BGP and remove all peers and prefixes."""
     if not config.bgp.enabled:
         return "BGP is already disabled"
 
     config.bgp.enabled = False
     config.bgp.peers = []  # Clear all peers
+    config.bgp.announced_prefixes = []  # Clear all prefixes
     ctx.dirty = True
-    return "Disabled BGP and removed all peers"
+    return "Disabled BGP and removed all peers and announced prefixes"
+
+
+def tool_add_bgp_prefix(config, ctx, prefix: str) -> str:
+    """Add a prefix to announce via BGP."""
+    if not config.bgp.enabled:
+        return "Error: BGP is not enabled. Use configure_bgp first."
+
+    # Validate prefix
+    try:
+        net = ipaddress.ip_network(prefix, strict=False)
+        # Normalize the prefix
+        prefix = str(net)
+        af = "IPv6" if net.version == 6 else "IPv4"
+    except Exception as e:
+        return f"Error: Invalid prefix: {e}"
+
+    # Initialize list if needed
+    if not hasattr(config.bgp, 'announced_prefixes') or config.bgp.announced_prefixes is None:
+        config.bgp.announced_prefixes = []
+
+    # Check for duplicate
+    if prefix in config.bgp.announced_prefixes:
+        return f"Error: Prefix {prefix} is already configured"
+
+    config.bgp.announced_prefixes.append(prefix)
+    ctx.dirty = True
+
+    return f"Added {af} prefix: {prefix}"
+
+
+def tool_remove_bgp_prefix(config, ctx, prefix: str) -> str:
+    """Remove an announced BGP prefix."""
+    if not config.bgp.enabled:
+        return "Error: BGP is not enabled"
+
+    if not hasattr(config.bgp, 'announced_prefixes') or not config.bgp.announced_prefixes:
+        return "Error: No prefixes configured"
+
+    # Normalize the prefix for comparison
+    try:
+        net = ipaddress.ip_network(prefix, strict=False)
+        normalized = str(net)
+    except Exception:
+        normalized = prefix
+
+    # Try to find and remove (check both original and normalized)
+    if prefix in config.bgp.announced_prefixes:
+        config.bgp.announced_prefixes.remove(prefix)
+        ctx.dirty = True
+        return f"Removed prefix {prefix}"
+    elif normalized in config.bgp.announced_prefixes:
+        config.bgp.announced_prefixes.remove(normalized)
+        ctx.dirty = True
+        return f"Removed prefix {normalized}"
+    else:
+        available = ", ".join(config.bgp.announced_prefixes)
+        return f"Error: Prefix {prefix} not found (available: {available})"
 
 
 def tool_enable_ospf(config, ctx, router_id: str = None, default_originate: bool = False) -> str:

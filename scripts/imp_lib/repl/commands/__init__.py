@@ -37,6 +37,9 @@ from .routing import (
     cmd_bgp_peers_list,
     cmd_bgp_peers_add,
     cmd_bgp_peers_remove,
+    cmd_bgp_prefixes_list,
+    cmd_bgp_prefixes_add,
+    cmd_bgp_prefixes_remove,
     cmd_ospf_enable,
     cmd_ospf_disable,
     cmd_ospf6_enable,
@@ -103,6 +106,7 @@ __all__ = [
     # Routing
     'cmd_bgp_enable', 'cmd_bgp_disable',
     'cmd_bgp_peers_list', 'cmd_bgp_peers_add', 'cmd_bgp_peers_remove',
+    'cmd_bgp_prefixes_list', 'cmd_bgp_prefixes_add', 'cmd_bgp_prefixes_remove',
     'cmd_ospf_enable', 'cmd_ospf_disable',
     'cmd_ospf6_enable', 'cmd_ospf6_disable',
     # Modules

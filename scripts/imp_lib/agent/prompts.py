@@ -35,11 +35,12 @@ Routing:
 - Use get_routes to see configured static routes
 - Default routes are just routes to 0.0.0.0/0 (IPv4) or ::/0 (IPv6)
 
-BGP supports multiple peers:
-- Use configure_bgp to set ASN and router-id (does not affect existing peers)
-- Use add_bgp_peer to add individual peers (BGP must be enabled first)
-- Use remove_bgp_peer to remove peers by IP address
-- Use get_bgp_config to see all configured peers before making changes
+BGP configuration:
+- Use configure_bgp to set ASN and router-id (does not affect existing peers/prefixes)
+- Use add_bgp_peer/remove_bgp_peer to manage peers (BGP must be enabled first)
+- Use add_bgp_prefix/remove_bgp_prefix to manage announced prefixes (network statements)
+- Use get_bgp_config to see current peers and announced prefixes before making changes
+- Announced prefixes are separate from NAT pools - BGP owns what gets advertised
 
 IMP VPP Module Architecture:
 IMP runs multiple VPP processes connected via memif shared memory:
@@ -58,13 +59,19 @@ Running NAT in a separate VPP instance connected via memif solves this.
 Module tools:
 - **list_modules**: See installed modules, their status, and available commands
 - **get_module_config**: View a module's current configuration
-- **execute_module_command**: Run module-defined commands (add/remove/list/set)
+- **execute_module_command**: Run module-defined commands (add/remove/list/show)
+
+Using modules - the pattern:
+1. Call list_modules to discover available modules and their commands
+2. Each module defines commands like "mappings/add", "bypass/list", "show"
+3. Use execute_module_command with module_name, command_path, and params
 
 Example for NAT module:
-- list_modules → shows nat module with commands: mappings/add, mappings/delete, mappings/list, bypass/add, bypass/delete, bypass/list, set-prefix, show
-- get_module_config(module_name="nat") → shows current NAT configuration
+- list_modules → shows: nat [enabled], Commands: mappings/add, mappings/delete, mappings/list, bypass/add, bypass/delete, bypass/list, source/add, source/delete, source/list, show
+- get_module_config(module_name="nat") → shows current NAT mappings, bypass rules, source interfaces
 - execute_module_command(module_name="nat", command_path="mappings/add", params={{"source_network": "192.168.1.0/24", "nat_pool": "23.177.24.96/30"}})
-- execute_module_command(module_name="nat", command_path="set-prefix", params={{"prefix": "23.177.24.96/29"}})
+- execute_module_command(module_name="nat", command_path="mappings/list", params={{}}) → list current mappings
+- execute_module_command(module_name="nat", command_path="source/add", params={{"interface": "lan"}}) → add source interface
 
 Packet Capture (pcap files for Wireshark):
 - Use start_capture to capture packets on VPP instances (core or modules like nat, nat64)

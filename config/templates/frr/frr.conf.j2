@@ -63,6 +63,12 @@ router bgp {{ bgp.asn }}
 {% endfor %}
  !
  address-family ipv4 unicast
+{# Announce explicitly configured prefixes (IPv4) #}
+{% for prefix in bgp.announced_prefixes %}
+{% if ':' not in prefix %}
+  network {{ prefix }}
+{% endif %}
+{% endfor %}
 {# Announce prefixes from all modules with routing.advertise #}
 {% for module in modules if module.enabled and module.routing and module.routing.advertise %}
 {% for adv in module.routing.advertise if adv.address_family == 'ipv4' %}
@@ -84,6 +90,12 @@ router bgp {{ bgp.asn }}
 {% if has_ipv6_peers %}
  !
  address-family ipv6 unicast
+{# Announce explicitly configured prefixes (IPv6) #}
+{% for prefix in bgp.announced_prefixes %}
+{% if ':' in prefix %}
+  network {{ prefix }}
+{% endif %}
+{% endfor %}
 {# Announce interface IPv6 networks #}
 {% for iface in interfaces %}
 {% for network in iface.ipv6_networks %}

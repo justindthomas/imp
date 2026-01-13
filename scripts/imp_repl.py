@@ -86,6 +86,7 @@ from imp_lib.repl.commands import (
     # Routing
     cmd_bgp_enable, cmd_bgp_disable,
     cmd_bgp_peers_list, cmd_bgp_peers_add, cmd_bgp_peers_remove,
+    cmd_bgp_prefixes_list, cmd_bgp_prefixes_add, cmd_bgp_prefixes_remove,
     cmd_ospf_enable, cmd_ospf_disable,
     cmd_ospf6_enable, cmd_ospf6_disable,
     # Modules
@@ -599,6 +600,9 @@ def cmd_show(ctx: MenuContext, args: list[str]) -> None:
 
     elif path == ["routing", "bgp", "peers"]:
         cmd_bgp_peers_list(MenuContext(config=config), [])
+
+    elif path == ["routing", "bgp", "prefixes"]:
+        cmd_bgp_prefixes_list(MenuContext(config=config), [])
 
     elif path == ["routing", "ospf"]:
         _show_ospf(config)
@@ -1562,6 +1566,21 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                     # Just "routing bgp peers" - navigate there
                     ctx.path = ["routing", "bgp", "peers"]
                     return True
+                if subcmd == "prefixes":
+                    if len(args) > 2:
+                        prefixes_cmd = args[2].lower()
+                        if prefixes_cmd == "list":
+                            cmd_bgp_prefixes_list(ctx, args[3:])
+                            return True
+                        if prefixes_cmd == "add":
+                            cmd_bgp_prefixes_add(ctx, args[3:])
+                            return True
+                        if prefixes_cmd == "remove":
+                            cmd_bgp_prefixes_remove(ctx, args[3:])
+                            return True
+                    # Just "routing bgp prefixes" - navigate there
+                    ctx.path = ["routing", "bgp", "prefixes"]
+                    return True
             # Just "routing bgp" - navigate there
             ctx.path = ["routing", "bgp"]
             return True
@@ -1780,6 +1799,18 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             if peers_cmd == "remove":
                 cmd_bgp_peers_remove(ctx, args[1:])
                 return True
+        # Handle "prefixes add" when in routing/bgp
+        if command == "prefixes" and args:
+            prefixes_cmd = args[0].lower()
+            if prefixes_cmd == "list":
+                cmd_bgp_prefixes_list(ctx, args[1:])
+                return True
+            if prefixes_cmd == "add":
+                cmd_bgp_prefixes_add(ctx, args[1:])
+                return True
+            if prefixes_cmd == "remove":
+                cmd_bgp_prefixes_remove(ctx, args[1:])
+                return True
 
     # BGP peer commands (when navigated to config/routing/bgp/peers)
     if config_path == ["routing", "bgp", "peers"]:
@@ -1791,6 +1822,18 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             return True
         if command == "remove":
             cmd_bgp_peers_remove(ctx, args)
+            return True
+
+    # BGP prefix commands (when navigated to config/routing/bgp/prefixes)
+    if config_path == ["routing", "bgp", "prefixes"]:
+        if command == "list":
+            cmd_bgp_prefixes_list(ctx, args)
+            return True
+        if command == "add":
+            cmd_bgp_prefixes_add(ctx, args)
+            return True
+        if command == "remove":
+            cmd_bgp_prefixes_remove(ctx, args)
             return True
 
     # OSPF commands (under config)

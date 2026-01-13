@@ -163,6 +163,7 @@ def load_config(config_file: Path) -> RouterConfig:
         enabled=bgp_data.get('enabled', False),
         asn=bgp_data.get('asn'),
         router_id=bgp_data.get('router_id'),
+        announced_prefixes=bgp_data.get('announced_prefixes', []),
         peers=bgp_peers,
     )
 

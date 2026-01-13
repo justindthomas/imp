@@ -40,6 +40,8 @@ from .write import (
     tool_add_bgp_peer,
     tool_remove_bgp_peer,
     tool_disable_bgp,
+    tool_add_bgp_prefix,
+    tool_remove_bgp_prefix,
     tool_enable_ospf,
     tool_disable_ospf,
     tool_enable_ospf6,
@@ -199,6 +201,10 @@ def execute_tool(name: str, args: dict, config, ctx) -> str:
             )
         if name == "disable_bgp":
             return tool_disable_bgp(config, ctx)
+        if name == "add_bgp_prefix":
+            return tool_add_bgp_prefix(config, ctx, prefix=args.get("prefix", ""))
+        if name == "remove_bgp_prefix":
+            return tool_remove_bgp_prefix(config, ctx, prefix=args.get("prefix", ""))
         if name == "enable_ospf":
             return tool_enable_ospf(
                 config, ctx,
@@ -326,6 +332,8 @@ __all__ = [
     'tool_add_bgp_peer',
     'tool_remove_bgp_peer',
     'tool_disable_bgp',
+    'tool_add_bgp_prefix',
+    'tool_remove_bgp_prefix',
     'tool_enable_ospf',
     'tool_disable_ospf',
     'tool_enable_ospf6',

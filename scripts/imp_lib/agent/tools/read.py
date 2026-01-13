@@ -76,7 +76,6 @@ def tool_get_config_summary(config) -> str:
 
     nat_config = get_module_config_dict(config, 'nat')
     if nat_config:
-        lines.append(f"NAT prefix: {nat_config.get('bgp_prefix', 'not set')}")
         lines.append(f"NAT mappings: {len(nat_config.get('mappings', []))}")
         lines.append(f"NAT bypass rules: {len(nat_config.get('bypass_pairs', []))}")
     else:
@@ -529,8 +528,20 @@ def tool_get_bgp_config(config) -> str:
         f"  Enabled: {bgp.enabled}",
         f"  Local AS: {bgp.asn}",
         f"  Router ID: {bgp.router_id}",
-        f"  Peers ({len(bgp.peers)}):",
     ]
+
+    # Announced prefixes
+    prefixes = bgp.announced_prefixes if hasattr(bgp, 'announced_prefixes') else []
+    lines.append(f"  Announced Prefixes ({len(prefixes)}):")
+    if prefixes:
+        for prefix in prefixes:
+            af = "IPv6" if ':' in prefix else "IPv4"
+            lines.append(f"    - {prefix} ({af})")
+    else:
+        lines.append("    (no prefixes configured)")
+
+    # Peers
+    lines.append(f"  Peers ({len(bgp.peers)}):")
     if bgp.peers:
         for p in bgp.peers:
             af = "IPv6" if ':' in p.peer_ip else "IPv4"

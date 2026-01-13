@@ -240,6 +240,14 @@ def show_bgp(config) -> None:
         print(f"  Local AS:   {bgp.asn}")
         print(f"  Router ID:  {bgp.router_id}")
         print()
+        print(f"  {Colors.BOLD}Announced Prefixes ({len(bgp.announced_prefixes)}):{Colors.NC}")
+        if bgp.announced_prefixes:
+            for prefix in bgp.announced_prefixes:
+                af = "IPv6" if ':' in prefix else "IPv4"
+                print(f"    {prefix} ({af})")
+        else:
+            print("    (no prefixes configured)")
+        print()
         print(f"  {Colors.BOLD}Peers ({len(bgp.peers)}):{Colors.NC}")
         if bgp.peers:
             for peer in bgp.peers:

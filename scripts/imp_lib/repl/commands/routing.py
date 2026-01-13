@@ -194,6 +194,105 @@ def cmd_bgp_peers_remove(ctx, args: list[str]) -> None:
 
 
 # =============================================================================
+# BGP Prefix Announcement Operations
+# =============================================================================
+
+def cmd_bgp_prefixes_list(ctx, args: list[str]) -> None:
+    """List announced BGP prefixes."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if not ctx.config.bgp.enabled:
+        warn("BGP is not enabled")
+        return
+
+    print()
+    print(f"{Colors.BOLD}Announced Prefixes ({len(ctx.config.bgp.announced_prefixes)}){Colors.NC}")
+    print("=" * 50)
+
+    if not ctx.config.bgp.announced_prefixes:
+        print("  (no prefixes configured)")
+    else:
+        for prefix in ctx.config.bgp.announced_prefixes:
+            af = "IPv6" if ':' in prefix else "IPv4"
+            print(f"  {prefix} ({af})")
+    print()
+
+
+def cmd_bgp_prefixes_add(ctx, args: list[str]) -> None:
+    """Add a prefix to announce via BGP."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if not ctx.config.bgp.enabled:
+        error("BGP is not enabled. Use 'routing bgp enable' first")
+        return
+
+    from imp_lib.config import validate_ipv4_cidr, validate_ipv6_cidr
+
+    def validate_cidr(value):
+        return validate_ipv4_cidr(value) or validate_ipv6_cidr(value)
+
+    print()
+    print(f"{Colors.BOLD}Add Announced Prefix{Colors.NC}")
+    print()
+
+    prefix = prompt_value("Prefix to announce (CIDR)", validate_cidr)
+    if not prefix:
+        return
+
+    # Check for duplicate
+    if prefix in ctx.config.bgp.announced_prefixes:
+        error(f"Prefix {prefix} is already configured")
+        return
+
+    ctx.config.bgp.announced_prefixes.append(prefix)
+    ctx.dirty = True
+
+    af = "IPv6" if ':' in prefix else "IPv4"
+    log(f"Added {af} prefix: {prefix}")
+
+
+def cmd_bgp_prefixes_remove(ctx, args: list[str]) -> None:
+    """Remove an announced BGP prefix."""
+    if not ctx.config:
+        error("No configuration loaded")
+        return
+
+    if not ctx.config.bgp.enabled:
+        warn("BGP is not enabled")
+        return
+
+    if not ctx.config.bgp.announced_prefixes:
+        warn("No prefixes configured")
+        return
+
+    # Get prefix from args or prompt
+    if args:
+        prefix = args[0]
+    else:
+        print()
+        print("Current prefixes:")
+        for i, p in enumerate(ctx.config.bgp.announced_prefixes, 1):
+            print(f"  {i}. {p}")
+        print()
+        prefix = prompt_value("Prefix to remove")
+        if not prefix:
+            return
+
+    # Find and remove prefix
+    if prefix in ctx.config.bgp.announced_prefixes:
+        if prompt_yes_no(f"Remove prefix {prefix}?"):
+            ctx.config.bgp.announced_prefixes.remove(prefix)
+            ctx.dirty = True
+            log(f"Removed prefix {prefix}")
+    else:
+        error(f"Prefix {prefix} not found")
+
+
+# =============================================================================
 # OSPF Configuration Operations
 # =============================================================================
 

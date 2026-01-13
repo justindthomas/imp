@@ -29,17 +29,15 @@ config_schema:
   source_interfaces:
     type: array
     description: "List of interface names whose traffic should be NATed"
-  bgp_prefix:
-    type: string
-    format: ipv4_cidr
-    description: "Prefix to announce via BGP covering all NAT pools"
   mappings:
     type: array
+    description: "Source network to NAT pool mappings"
     item_schema:
       source_network: {type: string, format: ipv4_cidr}
       nat_pool: {type: string, format: ipv4_cidr}
   bypass_pairs:
     type: array
+    description: "Source/destination pairs that skip NAT"
     item_schema:
       source: {type: string, format: ipv4_cidr}
       destination: {type: string, format: ipv4_cidr}
@@ -62,13 +60,6 @@ abf:
   exclude:
     - container_network        # Don't NAT container traffic
     - bypass_pairs             # Respect bypass rules from config
-
-# Routing: prefixes to announce via BGP and route to module
-routing:
-  advertise:
-    - config_field: bgp_prefix      # Field name in module.config
-      via_connection: external      # Route via external connection
-      address_family: ipv4
 
 # CLI commands for configuring this module
 commands:
@@ -142,16 +133,6 @@ commands:
     action: array_list
     target: source_interfaces
     format: "{}"
-
-  # BGP prefix
-  - path: set-prefix
-    description: "Set the BGP announcement prefix"
-    action: set_value
-    target: bgp_prefix
-    params:
-      - name: prefix
-        type: ipv4_cidr
-        prompt: "Prefix to announce via BGP (CIDR)"
 
   - path: show
     description: "Show NAT module configuration"

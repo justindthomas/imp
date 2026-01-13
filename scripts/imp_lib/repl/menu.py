@@ -39,6 +39,7 @@ def build_menu_tree() -> dict:
                                     "commands": ["show", "enable", "disable"],
                                     "children": {
                                         "peers": {"commands": ["list", "add", "remove"]},
+                                        "prefixes": {"commands": ["list", "add", "remove"]},
                                     },
                                 },
                                 "ospf": {"commands": ["show", "enable", "disable", "set"]},
