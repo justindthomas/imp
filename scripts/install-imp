@@ -779,16 +779,25 @@ log "Installing zfsbootmenu..."
 
 mkdir -p "$ROOTFS/boot/efi/EFI/ZBM"
 ZBM_EFI="$ROOTFS/boot/efi/EFI/ZBM/zfsbootmenu.efi"
-if ! curl -fL --retry 3 --retry-delay 5 https://get.zfsbootmenu.org/efi -o "$ZBM_EFI"; then
-    error "Failed to download zfsbootmenu EFI binary"
+EMBEDDED_ZBM="/root/images/zfsbootmenu.efi"
+
+# Use embedded copy if available, otherwise download
+if [[ -f "$EMBEDDED_ZBM" ]]; then
+    cp "$EMBEDDED_ZBM" "$ZBM_EFI"
+    log "Using embedded zfsbootmenu"
+else
+    log "Downloading zfsbootmenu from internet..."
+    if ! curl -fL --retry 3 --retry-delay 5 https://get.zfsbootmenu.org/efi -o "$ZBM_EFI"; then
+        error "Failed to download zfsbootmenu EFI binary"
+    fi
 fi
 
-# Verify the download succeeded (should be ~15-20MB)
-ZBM_SIZE=$(stat -f%z "$ZBM_EFI" 2>/dev/null || stat -c%s "$ZBM_EFI" 2>/dev/null || echo 0)
+# Verify the file (should be ~15-20MB)
+ZBM_SIZE=$(stat -c%s "$ZBM_EFI" 2>/dev/null || stat -f%z "$ZBM_EFI" 2>/dev/null || echo 0)
 if [[ "$ZBM_SIZE" -lt 1000000 ]]; then
-    error "zfsbootmenu download appears corrupted (size: $ZBM_SIZE bytes)"
+    error "zfsbootmenu appears corrupted (size: $ZBM_SIZE bytes)"
 fi
-log "Downloaded zfsbootmenu ($((ZBM_SIZE / 1024 / 1024))MB)"
+log "Installed zfsbootmenu ($((ZBM_SIZE / 1024 / 1024))MB)"
 
 # Also copy to UEFI fallback path for VMs and systems that don't persist NVRAM
 mkdir -p "$ROOTFS/boot/efi/EFI/BOOT"

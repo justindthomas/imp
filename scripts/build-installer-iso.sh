@@ -212,6 +212,24 @@ if [[ -n "$SNAPSHOT_FILE" ]]; then
 fi
 
 # =============================================================================
+# Download zfsbootmenu for offline installs
+# =============================================================================
+log "Downloading zfsbootmenu EFI binary..."
+mkdir -p config/includes.chroot/root/images
+ZBM_FILE="config/includes.chroot/root/images/zfsbootmenu.efi"
+if curl -fL --retry 3 --retry-delay 5 https://get.zfsbootmenu.org/efi -o "$ZBM_FILE"; then
+    ZBM_SIZE=$(stat -c%s "$ZBM_FILE" 2>/dev/null || stat -f%z "$ZBM_FILE" 2>/dev/null || echo 0)
+    if [[ "$ZBM_SIZE" -gt 1000000 ]]; then
+        log "Downloaded zfsbootmenu ($((ZBM_SIZE / 1024 / 1024))MB)"
+    else
+        warn "zfsbootmenu download appears too small, removing"
+        rm -f "$ZBM_FILE"
+    fi
+else
+    warn "Failed to download zfsbootmenu, installs will require internet"
+fi
+
+# =============================================================================
 # Boot menu customization (ISOLINUX for legacy BIOS)
 # =============================================================================
 log "Customizing ISOLINUX boot menu..."

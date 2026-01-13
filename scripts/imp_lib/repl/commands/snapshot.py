@@ -37,17 +37,20 @@ def cmd_snapshot_delete(ctx, args: list[str]) -> None:
 def cmd_snapshot_export(ctx, args: list[str]) -> None:
     """Export a snapshot to file."""
     if not args:
-        error("Usage: export <name> [--full] [-o output]")
+        error("Usage: export <name> [--full] [--clean] [-o output]")
         print("  Use 'snapshot list' to see available snapshots")
+        print("  --clean: Remove generated configs for deployment image")
         return
 
     cmd = ["imp", "snapshot", "export", args[0]]
 
-    # Parse remaining args for --full and -o
+    # Parse remaining args for --full, --clean, and -o
     i = 1
     while i < len(args):
         if args[i] == "--full":
             cmd.append("--full")
+        elif args[i] == "--clean":
+            cmd.append("--clean")
         elif args[i] in ("-o", "--output") and i + 1 < len(args):
             cmd.extend(["-o", args[i + 1]])
             i += 1
