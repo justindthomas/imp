@@ -404,12 +404,12 @@ if [[ "$INSTALL_MODE" == "image" ]]; then
     # Receive the snapshot - it comes as a full stream
     zstd -d < "$IMAGE_FILE" | zfs receive "${POOL_NAME}/ROOT/${BE_NAME}"
 
-    # The received dataset may have wrong mountpoint from source system
-    # Set it correctly for this new installation
-    zfs set mountpoint=/ "${POOL_NAME}/ROOT/${BE_NAME}"
-    zfs set canmount=noauto "${POOL_NAME}/ROOT/${BE_NAME}"
+    # The received dataset may be auto-mounted with wrong mountpoint from source
+    # Unmount first if mounted, then configure correctly
+    zfs unmount "${POOL_NAME}/ROOT/${BE_NAME}" 2>/dev/null || true
 
-    # Mount for any post-receive configuration
+    # Set correct properties for this new installation
+    zfs set canmount=noauto "${POOL_NAME}/ROOT/${BE_NAME}"
     zfs set mountpoint="$ROOTFS" "${POOL_NAME}/ROOT/${BE_NAME}"
     zfs mount "${POOL_NAME}/ROOT/${BE_NAME}"
 
