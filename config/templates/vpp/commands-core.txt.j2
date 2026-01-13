@@ -104,7 +104,8 @@ set interface ip address memif{{ conn.socket_id }}/0 {{ conn.core_ip }}/{{ conn.
 {% for module in modules if module.enabled and module.abf %}
 {% if module.config.source_interfaces is defined and module.config.source_interfaces %}
 # ABF rules for {{ module.name }}: steering traffic from specified interfaces
-{% for iface_name in module.config.source_interfaces %}
+{% for src_iface in module.config.source_interfaces %}
+{% set iface_name = src_iface.interface if src_iface is mapping else src_iface %}
 {% set iface = interfaces | selectattr('name', 'eq', iface_name) | first %}
 {% if iface %}
 {% for network in iface.networks %}
@@ -183,7 +184,7 @@ set interface l2 xconnect {{ v.to_interface }}.{{ v.vlan_id }} {{ v.from_interfa
 # RA on {{ iface.name }}
 ip6 nd {{ iface.name }} ra-interval {{ iface.ipv6_ra_interval_max }} {{ iface.ipv6_ra_interval_min }}
 {% for prefix in ra_prefixes %}
-ip6 nd {{ iface.name }} prefix {{ prefix }} infinite infinite off-link
+ip6 nd {{ iface.name }} prefix {{ prefix }} infinite
 {% endfor %}
 {% if not iface.ipv6_ra_suppress %}
 ip6 nd {{ iface.name }} no ra-suppress
@@ -196,7 +197,7 @@ ip6 nd {{ iface.name }} no ra-suppress
 # RA on loop{{ lo.instance }}
 ip6 nd loop{{ lo.instance }} ra-interval {{ lo.ipv6_ra_interval_max }} {{ lo.ipv6_ra_interval_min }}
 {% for prefix in ra_prefixes %}
-ip6 nd loop{{ lo.instance }} prefix {{ prefix }} infinite infinite off-link
+ip6 nd loop{{ lo.instance }} prefix {{ prefix }} infinite
 {% endfor %}
 {% if not lo.ipv6_ra_suppress %}
 ip6 nd loop{{ lo.instance }} no ra-suppress
@@ -209,7 +210,7 @@ ip6 nd loop{{ lo.instance }} no ra-suppress
 # RA on bvi{{ bvi.bridge_id }}
 ip6 nd loop{{ bvi.bridge_id }} ra-interval {{ bvi.ipv6_ra_interval_max }} {{ bvi.ipv6_ra_interval_min }}
 {% for prefix in ra_prefixes %}
-ip6 nd loop{{ bvi.bridge_id }} prefix {{ prefix }} infinite infinite off-link
+ip6 nd loop{{ bvi.bridge_id }} prefix {{ prefix }} infinite
 {% endfor %}
 {% if not bvi.ipv6_ra_suppress %}
 ip6 nd loop{{ bvi.bridge_id }} no ra-suppress
@@ -223,7 +224,7 @@ ip6 nd loop{{ bvi.bridge_id }} no ra-suppress
 # RA on {{ iface.name }}.{{ sub.vlan_id }}
 ip6 nd {{ iface.name }}.{{ sub.vlan_id }} ra-interval {{ sub.ipv6_ra_interval_max }} {{ sub.ipv6_ra_interval_min }}
 {% for prefix in ra_prefixes %}
-ip6 nd {{ iface.name }}.{{ sub.vlan_id }} prefix {{ prefix }} infinite infinite off-link
+ip6 nd {{ iface.name }}.{{ sub.vlan_id }} prefix {{ prefix }} infinite
 {% endfor %}
 {% if not sub.ipv6_ra_suppress %}
 ip6 nd {{ iface.name }}.{{ sub.vlan_id }} no ra-suppress

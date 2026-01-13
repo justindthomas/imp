@@ -511,6 +511,47 @@ def cmd_help(ctx: MenuContext, args: list[str], menus: dict) -> None:
                 print(f"    {cmd}")
             print()
 
+    # Show module-specific commands when inside a module
+    # Path like ["config", "modules", "nat"] or ["config", "modules", "nat", "mappings"]
+    if len(ctx.path) >= 3 and ctx.path[:2] == ["config", "modules"]:
+        module_name = ctx.path[2]
+        module_cmds = get_module_commands(module_name)
+        if module_cmds:
+            # Current subpath within module: ["config", "modules", "nat", "mappings"] -> ["mappings"]
+            module_subpath = ctx.path[3:]
+            prefix = "/".join(module_subpath) + "/" if module_subpath else ""
+
+            # Group commands by first path component
+            top_level = set()
+            direct_cmds = []
+            for cmd in module_cmds:
+                if prefix:
+                    # We're in a subpath - show matching commands
+                    if cmd.path.startswith(prefix):
+                        remaining = cmd.path[len(prefix):]
+                        if "/" not in remaining:
+                            direct_cmds.append((remaining, cmd.description))
+                        else:
+                            top_level.add(remaining.split("/")[0])
+                else:
+                    # At module root - show top-level paths and direct commands
+                    if "/" in cmd.path:
+                        top_level.add(cmd.path.split("/")[0])
+                    else:
+                        direct_cmds.append((cmd.path, cmd.description))
+
+            if top_level:
+                print(f"  {Colors.CYAN}Module Submenus:{Colors.NC}")
+                for name in sorted(top_level):
+                    print(f"    {name}")
+                print()
+
+            if direct_cmds:
+                print(f"  {Colors.CYAN}Module Commands:{Colors.NC}")
+                for cmd_name, desc in direct_cmds:
+                    print(f"    {cmd_name:16} {desc}")
+                print()
+
 
 def cmd_show(ctx: MenuContext, args: list[str]) -> None:
     """Show configuration at current level."""
@@ -968,6 +1009,38 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
         ctx.path = []
         return True
 
+    # Early module command handling - check before global commands when inside a module
+    # This allows modules to override commands like "show"
+    if len(ctx.path) >= 3 and ctx.path[:2] == ["config", "modules"] and MODULE_LOADER_AVAILABLE:
+        module_name = ctx.path[2]
+        module_cmds = get_module_commands(module_name)
+        if module_cmds:
+            # Build command path from path beyond module name + command
+            module_subpath = ctx.path[3:]
+            path_parts = module_subpath + [command]
+            cmd_path = "/".join(path_parts)
+
+            # Try to match a module command
+            for mod_cmd in module_cmds:
+                if mod_cmd.path == cmd_path:
+                    execute_module_command(ctx, module_name, mod_cmd)
+                    return True
+
+            # Try with first arg appended (e.g., "source add" -> "source/add")
+            if args:
+                cmd_path_with_arg = "/".join(module_subpath + [command, args[0]])
+                for mod_cmd in module_cmds:
+                    if mod_cmd.path == cmd_path_with_arg:
+                        execute_module_command(ctx, module_name, mod_cmd)
+                        return True
+
+            # Check if command is a submenu prefix - if so, navigate there
+            prefix = "/".join(module_subpath + [command])
+            has_subcommands = any(mod_cmd.path.startswith(prefix + "/") for mod_cmd in module_cmds)
+            if has_subcommands:
+                ctx.path = ctx.path + [command]
+                return True
+
     if command == "show":
         # At root: show live operational state
         # In config menu: show staged configuration
@@ -1135,15 +1208,15 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
     # Multi-word commands from any level: "interfaces <name> ospf area <n>", etc.
     if command == "interfaces" and args and ctx.config:
         subcommand = args[0].lower()
-        # Check for internal interface with ospf command: "interfaces internal0 ospf area 0"
-        iface = next((i for i in ctx.config.internal if i.vpp_name == subcommand), None)
+        # Find interface by name
+        iface = next((i for i in ctx.config.interfaces if i.name == subcommand), None)
         if iface and len(args) >= 2:
             if args[1].lower() == "ospf" and len(args) >= 4 and args[2].lower() == "area":
                 try:
                     area = int(args[3])
                     iface.ospf_area = area
                     ctx.dirty = True
-                    log(f"Set {iface.vpp_name} OSPF area to {area}")
+                    log(f"Set {iface.name} OSPF area to {area}")
                     return True
                 except ValueError:
                     error("Invalid area number")
@@ -1151,14 +1224,14 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             if args[1].lower() == "ospf" and len(args) >= 3 and args[2].lower() == "passive":
                 iface.ospf_passive = True
                 ctx.dirty = True
-                log(f"Set {iface.vpp_name} as OSPF passive")
+                log(f"Set {iface.name} as OSPF passive")
                 return True
             if args[1].lower() == "ospf6" and len(args) >= 4 and args[2].lower() == "area":
                 try:
                     area = int(args[3])
                     iface.ospf6_area = area
                     ctx.dirty = True
-                    log(f"Set {iface.vpp_name} OSPFv3 area to {area}")
+                    log(f"Set {iface.name} OSPFv3 area to {area}")
                     return True
                 except ValueError:
                     error("Invalid area number")
@@ -1166,7 +1239,7 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             if args[1].lower() == "ospf6" and len(args) >= 3 and args[2].lower() == "passive":
                 iface.ospf6_passive = True
                 ctx.dirty = True
-                log(f"Set {iface.vpp_name} as OSPFv3 passive")
+                log(f"Set {iface.name} as OSPFv3 passive")
                 return True
             # IPv6 RA commands: "interfaces <name> ipv6-ra enable/disable/interval/suppress"
             if args[1].lower() == "ipv6-ra" and len(args) >= 3:
@@ -1174,22 +1247,22 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                 if ra_cmd == "enable":
                     iface.ipv6_ra_enabled = True
                     ctx.dirty = True
-                    log(f"Enabled IPv6 RA on {iface.vpp_name}")
+                    log(f"Enabled IPv6 RA on {iface.name}")
                     return True
                 if ra_cmd == "disable":
                     iface.ipv6_ra_enabled = False
                     ctx.dirty = True
-                    log(f"Disabled IPv6 RA on {iface.vpp_name}")
+                    log(f"Disabled IPv6 RA on {iface.name}")
                     return True
                 if ra_cmd == "suppress":
                     iface.ipv6_ra_suppress = True
                     ctx.dirty = True
-                    log(f"Suppressed IPv6 RA on {iface.vpp_name}")
+                    log(f"Suppressed IPv6 RA on {iface.name}")
                     return True
                 if ra_cmd == "no-suppress":
                     iface.ipv6_ra_suppress = False
                     ctx.dirty = True
-                    log(f"Enabled IPv6 RA sending on {iface.vpp_name}")
+                    log(f"Enabled IPv6 RA sending on {iface.name}")
                     return True
                 if ra_cmd == "interval" and len(args) >= 5:
                     try:
@@ -1198,7 +1271,7 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                         iface.ipv6_ra_interval_max = max_int
                         iface.ipv6_ra_interval_min = min_int
                         ctx.dirty = True
-                        log(f"Set {iface.vpp_name} RA interval to {max_int}/{min_int}s")
+                        log(f"Set {iface.name} RA interval to {max_int}/{min_int}s")
                         return True
                     except ValueError:
                         error("Invalid interval values")
@@ -1210,110 +1283,20 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                         if prefix not in iface.ipv6_ra_prefixes:
                             iface.ipv6_ra_prefixes.append(prefix)
                             ctx.dirty = True
-                            log(f"Added RA prefix {prefix} to {iface.vpp_name}")
+                            log(f"Added RA prefix {prefix} to {iface.name}")
                         return True
                     if prefix_cmd == "remove" and len(args) >= 5:
                         prefix = args[4]
                         if prefix in iface.ipv6_ra_prefixes:
                             iface.ipv6_ra_prefixes.remove(prefix)
                             ctx.dirty = True
-                            log(f"Removed RA prefix {prefix} from {iface.vpp_name}")
+                            log(f"Removed RA prefix {prefix} from {iface.name}")
                         return True
                     if prefix_cmd == "clear":
                         iface.ipv6_ra_prefixes.clear()
                         ctx.dirty = True
-                        log(f"Cleared custom RA prefixes on {iface.vpp_name}")
+                        log(f"Cleared custom RA prefixes on {iface.name}")
                         return True
-        # Check for external interface with ospf command: "interfaces external ospf area 0"
-        if subcommand == "external" and ctx.config.external and len(args) >= 2:
-            if args[1].lower() == "ospf" and len(args) >= 4 and args[2].lower() == "area":
-                try:
-                    area = int(args[3])
-                    ctx.config.external.ospf_area = area
-                    ctx.dirty = True
-                    log(f"Set external OSPF area to {area}")
-                    return True
-                except ValueError:
-                    error("Invalid area number")
-                    return True
-            if args[1].lower() == "ospf" and len(args) >= 3 and args[2].lower() == "passive":
-                ctx.config.external.ospf_passive = True
-                ctx.dirty = True
-                log(f"Set external as OSPF passive")
-                return True
-            if args[1].lower() == "ospf6" and len(args) >= 4 and args[2].lower() == "area":
-                try:
-                    area = int(args[3])
-                    ctx.config.external.ospf6_area = area
-                    ctx.dirty = True
-                    log(f"Set external OSPFv3 area to {area}")
-                    return True
-                except ValueError:
-                    error("Invalid area number")
-                    return True
-            if args[1].lower() == "ospf6" and len(args) >= 3 and args[2].lower() == "passive":
-                ctx.config.external.ospf6_passive = True
-                ctx.dirty = True
-                log(f"Set external as OSPFv3 passive")
-                return True
-            # IPv6 RA commands for external interface
-            if args[1].lower() == "ipv6-ra" and len(args) >= 3:
-                ra_cmd = args[2].lower()
-                ext = ctx.config.external
-                if ra_cmd == "enable":
-                    ext.ipv6_ra_enabled = True
-                    ctx.dirty = True
-                    log(f"Enabled IPv6 RA on external")
-                    return True
-                if ra_cmd == "disable":
-                    ext.ipv6_ra_enabled = False
-                    ctx.dirty = True
-                    log(f"Disabled IPv6 RA on external")
-                    return True
-                if ra_cmd == "suppress":
-                    ext.ipv6_ra_suppress = True
-                    ctx.dirty = True
-                    log(f"Suppressed IPv6 RA on external")
-                    return True
-                if ra_cmd == "no-suppress":
-                    ext.ipv6_ra_suppress = False
-                    ctx.dirty = True
-                    log(f"Enabled IPv6 RA sending on external")
-                    return True
-                if ra_cmd == "interval" and len(args) >= 5:
-                    try:
-                        max_int = int(args[3])
-                        min_int = int(args[4])
-                        ext.ipv6_ra_interval_max = max_int
-                        ext.ipv6_ra_interval_min = min_int
-                        ctx.dirty = True
-                        log(f"Set external RA interval to {max_int}/{min_int}s")
-                        return True
-                    except ValueError:
-                        error("Invalid interval values")
-                        return True
-                if ra_cmd == "prefix" and len(args) >= 4:
-                    prefix_cmd = args[3].lower()
-                    if prefix_cmd == "add" and len(args) >= 5:
-                        prefix = args[4]
-                        if prefix not in ext.ipv6_ra_prefixes:
-                            ext.ipv6_ra_prefixes.append(prefix)
-                            ctx.dirty = True
-                            log(f"Added RA prefix {prefix} to external")
-                        return True
-                    if prefix_cmd == "remove" and len(args) >= 5:
-                        prefix = args[4]
-                        if prefix in ext.ipv6_ra_prefixes:
-                            ext.ipv6_ra_prefixes.remove(prefix)
-                            ctx.dirty = True
-                            log(f"Removed RA prefix {prefix} from external")
-                        return True
-                    if prefix_cmd == "clear":
-                        ext.ipv6_ra_prefixes.clear()
-                        ctx.dirty = True
-                        log(f"Cleared custom RA prefixes on external")
-                        return True
-
     # Multi-word commands from any level: "loopbacks add", "nat mappings", etc.
     if command == "loopbacks" and args:
         subcommand = args[0].lower()
@@ -1642,6 +1625,145 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
         cmd_agent(ctx, args)
         return True
 
+    # Interface commands (at config interfaces level)
+    if config_path == ["interfaces"] and ctx.config:
+        if command == "list" or command == "show":
+            _show_interfaces(ctx.config)
+            return True
+
+    # Interface-specific commands when navigated into an interface
+    # Path like ["interfaces", "lan"] -> config_path is ["interfaces", "lan"]
+    if len(config_path) == 2 and config_path[0] == "interfaces" and ctx.config:
+        iface_name = config_path[1]
+        iface = next((i for i in ctx.config.interfaces if i.name == iface_name), None)
+        if iface:
+            # Show command
+            if command == "show":
+                _show_interface_detail(ctx.config, iface_name)
+                return True
+            # OSPF commands
+            if command == "ospf" and args:
+                if args[0].lower() == "area" and len(args) >= 2:
+                    try:
+                        area = int(args[1])
+                        iface.ospf_area = area
+                        ctx.dirty = True
+                        log(f"Set {iface.name} OSPF area to {area}")
+                        return True
+                    except ValueError:
+                        error("Invalid area number")
+                        return True
+                if args[0].lower() == "passive":
+                    iface.ospf_passive = True
+                    ctx.dirty = True
+                    log(f"Set {iface.name} as OSPF passive")
+                    return True
+            # OSPFv3 commands
+            if command == "ospf6" and args:
+                if args[0].lower() == "area" and len(args) >= 2:
+                    try:
+                        area = int(args[1])
+                        iface.ospf6_area = area
+                        ctx.dirty = True
+                        log(f"Set {iface.name} OSPFv3 area to {area}")
+                        return True
+                    except ValueError:
+                        error("Invalid area number")
+                        return True
+                if args[0].lower() == "passive":
+                    iface.ospf6_passive = True
+                    ctx.dirty = True
+                    log(f"Set {iface.name} as OSPFv3 passive")
+                    return True
+            # IPv6 RA commands
+            if command == "ipv6-ra":
+                if not args:
+                    print()
+                    print(f"IPv6 RA commands for {iface.name}:")
+                    print(f"  ipv6-ra enable       - Enable RA on this interface")
+                    print(f"  ipv6-ra disable      - Disable RA on this interface")
+                    print(f"  ipv6-ra suppress     - Suppress RA (keep config)")
+                    print(f"  ipv6-ra no-suppress  - Resume sending RA")
+                    print(f"  ipv6-ra interval <max> <min> - Set RA intervals")
+                    print(f"  ipv6-ra prefix add <prefix>  - Add custom prefix")
+                    print(f"  ipv6-ra prefix remove <prefix> - Remove prefix")
+                    print(f"  ipv6-ra prefix clear - Clear custom prefixes")
+                    print()
+                    print(f"Current: {'enabled' if iface.ipv6_ra_enabled else 'disabled'}, " +
+                          f"{'suppressed' if iface.ipv6_ra_suppress else 'active'}, " +
+                          f"interval {iface.ipv6_ra_interval_max}/{iface.ipv6_ra_interval_min}s")
+                    # Show effective prefixes
+                    if iface.ipv6_ra_prefixes:
+                        print(f"Custom prefixes: {', '.join(iface.ipv6_ra_prefixes)}")
+                    else:
+                        # Show auto-computed prefixes from IPv6 addresses
+                        auto_prefixes = getattr(iface, 'ipv6_ra_prefixes_auto', None)
+                        if auto_prefixes:
+                            print(f"Auto prefixes: {', '.join(auto_prefixes)}")
+                        elif iface.ipv6:
+                            # Compute from addresses if property not available
+                            prefixes = []
+                            for addr in iface.ipv6:
+                                net = ipaddress.IPv6Network(f"{addr.address}/{64}", strict=False)
+                                prefixes.append(str(net))
+                            if prefixes:
+                                print(f"Auto prefixes: {', '.join(prefixes)}")
+                    return True
+                ra_cmd = args[0].lower()
+                if ra_cmd == "enable":
+                    iface.ipv6_ra_enabled = True
+                    ctx.dirty = True
+                    log(f"Enabled IPv6 RA on {iface.name}")
+                    return True
+                if ra_cmd == "disable":
+                    iface.ipv6_ra_enabled = False
+                    ctx.dirty = True
+                    log(f"Disabled IPv6 RA on {iface.name}")
+                    return True
+                if ra_cmd == "suppress":
+                    iface.ipv6_ra_suppress = True
+                    ctx.dirty = True
+                    log(f"Suppressed IPv6 RA on {iface.name}")
+                    return True
+                if ra_cmd == "no-suppress":
+                    iface.ipv6_ra_suppress = False
+                    ctx.dirty = True
+                    log(f"Enabled IPv6 RA sending on {iface.name}")
+                    return True
+                if ra_cmd == "interval" and len(args) >= 3:
+                    try:
+                        max_int = int(args[1])
+                        min_int = int(args[2])
+                        iface.ipv6_ra_interval_max = max_int
+                        iface.ipv6_ra_interval_min = min_int
+                        ctx.dirty = True
+                        log(f"Set {iface.name} RA interval to {max_int}/{min_int}s")
+                        return True
+                    except ValueError:
+                        error("Invalid interval values")
+                        return True
+                if ra_cmd == "prefix" and len(args) >= 2:
+                    prefix_cmd = args[1].lower()
+                    if prefix_cmd == "add" and len(args) >= 3:
+                        prefix = args[2]
+                        if prefix not in iface.ipv6_ra_prefixes:
+                            iface.ipv6_ra_prefixes.append(prefix)
+                            ctx.dirty = True
+                            log(f"Added RA prefix {prefix} to {iface.name}")
+                        return True
+                    if prefix_cmd == "remove" and len(args) >= 3:
+                        prefix = args[2]
+                        if prefix in iface.ipv6_ra_prefixes:
+                            iface.ipv6_ra_prefixes.remove(prefix)
+                            ctx.dirty = True
+                            log(f"Removed RA prefix {prefix} from {iface.name}")
+                        return True
+                    if prefix_cmd == "clear":
+                        iface.ipv6_ra_prefixes.clear()
+                        ctx.dirty = True
+                        log(f"Cleared custom RA prefixes on {iface.name}")
+                        return True
+
     # Loopback commands (under config)
     if config_path == ["loopbacks"]:
         if command == "list":
@@ -1749,7 +1871,7 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                             return True
                 else:
                     # Just "modules nat" - navigate there
-                    ctx.path = ["modules", module_name]
+                    ctx.path = ["config", "modules", module_name]
                     return True
 
     # Generic module commands - config modules <module-name> <command>

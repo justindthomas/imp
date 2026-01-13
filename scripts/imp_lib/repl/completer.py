@@ -27,6 +27,15 @@ CONFIG_FILE = Path("/persistent/config/router.json")
 from imp_lib.modules import load_module_definition
 MODULE_LOADER_AVAILABLE = True
 
+# Import shell helpers for running module discovery
+try:
+    from imp_lib.common.vpp import get_available_vpp_instances
+    VPP_HELPER_AVAILABLE = True
+except ImportError:
+    VPP_HELPER_AVAILABLE = False
+    def get_available_vpp_instances():
+        return []
+
 
 class MenuCompleter(Completer):
     """Dynamic completer that provides context-aware completions."""
@@ -166,6 +175,14 @@ class MenuCompleter(Completer):
                 completions.extend(menu["children"].keys())
 
         # Dynamic completions based on effective path
+
+        # Shell menu - add running VPP module instances
+        if effective_path == ["shell"] and VPP_HELPER_AVAILABLE:
+            # Add running module names (excludes core which is already static)
+            for instance in get_available_vpp_instances():
+                if instance != "core":
+                    completions.append(instance)
+
         if effective_path == ["config", "interfaces"] and self.ctx.config:
             # Add interface names from config (dynamic children)
             completions.extend(i.name for i in self.ctx.config.interfaces)
@@ -175,7 +192,11 @@ class MenuCompleter(Completer):
             iface_name = effective_path[2]
             if iface_name not in ("management", "show", "list", "add"):
                 if any(i.name == iface_name for i in self.ctx.config.interfaces):
-                    completions.extend(["show", "set-ipv4", "set-ipv6", "set-mtu", "delete", "subinterfaces", "ospf", "ospf6"])
+                    completions.extend(["show", "set-ipv4", "set-ipv6", "set-mtu", "delete", "subinterfaces", "ospf", "ospf6", "ipv6-ra"])
+
+        # IPv6 RA subcommands
+        if len(effective_path) == 4 and effective_path[:2] == ["config", "interfaces"] and effective_path[3] == "ipv6-ra":
+            completions.extend(["enable", "disable", "suppress", "no-suppress", "interval", "prefix"])
 
         # Routes menu
         if effective_path == ["config", "routes"] and self.ctx.config:

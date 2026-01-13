@@ -30,23 +30,18 @@ def navigate(ctx: MenuContext, target: str, menus: dict) -> bool:
         ctx.path.append(target)
         return True
 
-    # Special case: internal interfaces are dynamic
-    if ctx.path == ["config", "interfaces", "internal"] and ctx.config:
-        if any(i.vpp_name == target for i in ctx.config.internal):
+    # Dynamic interface navigation: config interfaces <name>
+    if ctx.path == ["config", "interfaces"] and ctx.config:
+        if any(i.name == target for i in ctx.config.interfaces):
             ctx.path.append(target)
             return True
 
-    # Special case: subinterfaces on dynamic internal interfaces
-    if len(ctx.path) == 4 and ctx.path[:3] == ["config", "interfaces", "internal"] and ctx.config:
-        iface_name = ctx.path[3]
-        if any(i.vpp_name == iface_name for i in ctx.config.internal):
+    # Subinterfaces on a dynamic interface
+    if len(ctx.path) == 3 and ctx.path[:2] == ["config", "interfaces"] and ctx.config:
+        iface_name = ctx.path[2]
+        if any(i.name == iface_name for i in ctx.config.interfaces):
             if target == "subinterfaces":
                 ctx.path.append(target)
                 return True
-
-    # Special case: subinterfaces on external interface
-    if ctx.path == ["config", "interfaces", "external"] and target == "subinterfaces":
-        ctx.path.append(target)
-        return True
 
     return False

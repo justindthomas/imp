@@ -18,12 +18,16 @@ ipv6 route {{ prefix }} {{ conn.module_ip }} memif-{{ module.name }}-{{ adv.via_
 {% endif %}
 {% endfor %}
 {% endfor %}
-{# Blackhole routes for interface IPv6 networks (for BGP announcement) #}
-{% for iface in interfaces %}
-{% for network in iface.ipv6_networks %}
-ipv6 route {{ network }} blackhole
+{# Blackhole routes for announced prefixes (ensures they're in RIB for BGP) #}
+{% if bgp.enabled and bgp.announced_prefixes %}
+{% for prefix in bgp.announced_prefixes %}
+{% if ':' in prefix %}
+ipv6 route {{ prefix }} blackhole
+{% else %}
+ip route {{ prefix }} blackhole
+{% endif %}
 {% endfor %}
-{% endfor %}
+{% endif %}
 {# User-defined static routes #}
 {% for route in routes %}
 {% if ':' in route.destination %}
@@ -95,12 +99,6 @@ router bgp {{ bgp.asn }}
 {% if ':' in prefix %}
   network {{ prefix }}
 {% endif %}
-{% endfor %}
-{# Announce interface IPv6 networks #}
-{% for iface in interfaces %}
-{% for network in iface.ipv6_networks %}
-  network {{ network }}
-{% endfor %}
 {% endfor %}
 {# Announce IPv6 prefixes from modules with routing.advertise #}
 {% for module in modules if module.enabled and module.routing and module.routing.advertise %}

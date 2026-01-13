@@ -65,9 +65,10 @@ def build_menu_tree() -> dict:
                     "children": {
                         "routing": {"commands": []},
                         "core": {"commands": []},
-                        "nat": {"commands": []},
+                        # Module shells are dynamic - added by completer based on running modules
                     },
                     "commands": [],
+                    "dynamic": True,  # Shell has dynamic children (running modules)
                 },
                 "capture": {
                     "commands": ["start", "stop", "status", "files", "analyze", "export", "delete"],
