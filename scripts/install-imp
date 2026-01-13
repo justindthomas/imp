@@ -10,11 +10,13 @@
 #   5. Sets up zfsbootmenu for boot environment management
 #
 # Usage:
-#   install-imp <disk>                       # Bootstrap from internet
-#   install-imp --image <file.zfs.zst> <disk>  # Install from snapshot
+#   install-imp <disk>                          # Auto (uses embedded image if present)
+#   install-imp --bootstrap <disk>              # Force network bootstrap
+#   install-imp --image <file.zfs.zst> <disk>   # Install from snapshot
 #
 # Examples:
-#   install-imp /dev/sda
+#   install-imp /dev/sda                              # Auto install
+#   install-imp --bootstrap /dev/sda                  # Force bootstrap
 #   install-imp --image /tmp/imp-v1.0.0.zfs.zst /dev/sda
 #
 # Run from the IMP Installer ISO or a Debian Bookworm Live CD with ZFS support.
@@ -33,6 +35,10 @@ PERSISTENT_FILE=""
 OUTPUT_FILE=""
 INSTALL_MODE="bootstrap"  # "bootstrap", "image", or "build"
 BUILD_POOL_FILE=""  # Temporary file for build mode pool
+FORCE_BOOTSTRAP=""  # Set by --bootstrap flag to override auto-detection
+
+# Auto-detect embedded image from ISO
+EMBEDDED_IMAGE="/root/images/system.zfs.zst"
 
 # Colors for output
 RED='\033[0;31m'
@@ -56,16 +62,19 @@ usage() {
     echo "                      Created by: $0 --output or imp snapshot export"
     echo "  --persistent <file> Also restore persistent data (config + data)"
     echo "                      Created by: imp snapshot export --full <name>"
+    echo "  --bootstrap         Force network bootstrap (ignore embedded image)"
     echo "  --output <file>     Build mode: create image file instead of installing"
     echo "  --hostname <name>   Set hostname (default: router)"
     echo ""
     echo "Modes:"
-    echo "  Bootstrap (default):  Downloads packages from internet (~15-30 min)"
-    echo "  Image (--image):      Receives pre-built snapshot (~2-5 min)"
-    echo "  Build (--output):     Creates deployable image file (~15-30 min)"
+    echo "  Auto (default):     Uses embedded image if available, else bootstrap"
+    echo "  Image (--image):    Receives pre-built snapshot (~2-5 min)"
+    echo "  Bootstrap:          Downloads packages from internet (~15-30 min)"
+    echo "  Build (--output):   Creates deployable image file (~15-30 min)"
     echo ""
     echo "Examples:"
-    echo "  $0 /dev/sda                                      # Bootstrap install"
+    echo "  $0 /dev/sda                                      # Auto install"
+    echo "  $0 --bootstrap /dev/sda                          # Force bootstrap"
     echo "  $0 --image system.zfs.zst /dev/sda               # Image install"
     echo "  $0 --image system.zfs.zst --persistent persistent.zfs.zst /dev/sda"
     echo "                                                   # Full restore"
@@ -102,6 +111,10 @@ while [[ $# -gt 0 ]]; do
             HOSTNAME="$2"
             shift 2
             ;;
+        --bootstrap|-b)
+            FORCE_BOOTSTRAP=true
+            shift
+            ;;
         --help|-h)
             usage
             ;;
@@ -114,6 +127,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Auto-detect embedded image if no explicit mode chosen
+if [[ -z "$FORCE_BOOTSTRAP" && -f "$EMBEDDED_IMAGE" && -z "$IMAGE_FILE" && "$INSTALL_MODE" == "bootstrap" ]]; then
+    IMAGE_FILE="$EMBEDDED_IMAGE"
+    INSTALL_MODE="image"
+    log "Using embedded system image"
+fi
 
 # Validate arguments
 if [[ "$INSTALL_MODE" == "build" ]]; then

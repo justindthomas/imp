@@ -18,10 +18,13 @@
 
 set -euo pipefail
 
-OUTPUT_DIR="${1:-/var/lib/images}"
 WORK_DIR="/tmp/imp-live-build"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATE=$(date +%Y%m%d)
+
+# Default values
+SNAPSHOT_FILE=""
+OUTPUT_DIR="/var/lib/images"
 
 # Colors
 GREEN='\033[0;32m'
@@ -33,12 +36,48 @@ log() { echo -e "${GREEN}[+]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --snapshot|-s)
+            SNAPSHOT_FILE="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: build-installer-iso.sh [--snapshot <file.zfs.zst>] [output-dir]"
+            echo ""
+            echo "Build a custom Debian Live ISO with ZFS pre-compiled for IMP installation."
+            echo ""
+            echo "Options:"
+            echo "  --snapshot, -s <file>  Embed a ZFS snapshot image for fast offline installs"
+            echo "  --help, -h             Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  build-installer-iso.sh                               # Bootstrap-only ISO"
+            echo "  build-installer-iso.sh --snapshot imp.zfs.zst        # ISO with embedded image"
+            echo "  build-installer-iso.sh --snapshot imp.zfs.zst /tmp   # Custom output directory"
+            exit 0
+            ;;
+        *)
+            OUTPUT_DIR="$1"
+            shift
+            ;;
+    esac
+done
+
 # Check we're running as root
 [[ $EUID -ne 0 ]] && error "This script must be run as root"
 
 # Check live-build is installed
 if ! command -v lb &>/dev/null; then
     error "live-build not installed. Run: apt install live-build"
+fi
+
+# Validate snapshot if provided
+if [[ -n "$SNAPSHOT_FILE" ]]; then
+    [[ ! -f "$SNAPSHOT_FILE" ]] && error "Snapshot file not found: $SNAPSHOT_FILE"
+    SNAPSHOT_SIZE=$(du -h "$SNAPSHOT_FILE" | cut -f1)
+    log "Including snapshot: $SNAPSHOT_FILE ($SNAPSHOT_SIZE)"
 fi
 
 log "Building IMP Installer ISO..."
@@ -165,6 +204,13 @@ if [[ -d "${SCRIPT_DIR}/../scripts" ]]; then
     chmod +x config/includes.chroot/usr/local/bin/*.sh 2>/dev/null || true
 fi
 
+# Include snapshot image if provided
+if [[ -n "$SNAPSHOT_FILE" ]]; then
+    mkdir -p config/includes.chroot/root/images
+    cp "$SNAPSHOT_FILE" config/includes.chroot/root/images/system.zfs.zst
+    log "Embedded snapshot as /root/images/system.zfs.zst"
+fi
+
 # =============================================================================
 # Boot menu customization (ISOLINUX for legacy BIOS)
 # =============================================================================
@@ -289,7 +335,37 @@ fi
 # =============================================================================
 mkdir -p config/includes.chroot/etc
 
-cat > config/includes.chroot/etc/motd << 'EOF'
+if [[ -n "$SNAPSHOT_FILE" ]]; then
+    # MOTD for ISO with embedded image
+    cat > config/includes.chroot/etc/motd << 'EOF'
+
+ ___ __  __ ____    ____             _
+|_ _|  \/  |  _ \  |  _ \ ___  _   _| |_ ___ _ __
+ | || |\/| | |_) | | |_) / _ \| | | | __/ _ \ '__|
+ | || |  | |  __/  |  _ < (_) | |_| | ||  __/ |
+|___|_|  |_|_|     |_| \_\___/ \__,_|\__\___|_|
+
+IMP Router Installer - Image Edition
+
+This ISO includes a pre-built system image for fast installation.
+
+Quick install (recommended, ~2-5 minutes):
+  install-imp /dev/sda
+
+Network bootstrap (requires internet, ~15-30 minutes):
+  install-imp --bootstrap /dev/sda
+
+Restore with config backup:
+  install-imp --persistent backup-persistent.zfs.zst /dev/sda
+
+After install:
+  imp                    # Interactive configuration REPL
+  imp config edit        # Configuration wizard
+
+EOF
+else
+    # MOTD for bootstrap-only ISO
+    cat > config/includes.chroot/etc/motd << 'EOF'
 
  ___ __  __ ____    ____             _
 |_ _|  \/  |  _ \  |  _ \ ___  _   _| |_ ___ _ __
@@ -303,18 +379,14 @@ Quick start:
   install-imp /dev/sda                          # Bootstrap from internet
   install-imp --image system.zfs.zst /dev/sda   # Install from snapshot
 
-Or manually:
-  modprobe zfs                  # Load ZFS (should be instant)
-  lsblk                         # List disks
-
-After install, run:
-  imp                           # Interactive configuration REPL
-  imp config edit               # Interactive network configuration
-  imp status                    # Check service status
+After install:
+  imp                    # Interactive configuration REPL
+  imp config edit        # Configuration wizard
 
 Full documentation: /root/imp-build/
 
 EOF
+fi
 
 # =============================================================================
 # Auto-load ZFS module on boot
