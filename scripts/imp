@@ -586,8 +586,8 @@ def clean_generated_configs(mount_point: str) -> None:
     systemd_dir = Path(mount_point) / "etc/systemd/system"
     if systemd_dir.exists():
         for f in systemd_dir.glob("vpp-*.service"):
-            # Keep vpp-core.service (static), remove module services
-            if f.name != "vpp-core.service":
+            # Keep static services, remove module services (vpp-nat, vpp-nat64, etc.)
+            if f.name not in ["vpp-core.service", "vpp-core-config.service"]:
                 f.unlink()
 
     # Reset hostname to default
