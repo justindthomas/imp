@@ -44,4 +44,17 @@ def navigate(ctx: MenuContext, target: str, menus: dict) -> bool:
                 ctx.path.append(target)
                 return True
 
+    # Dynamic module navigation: config modules <name>
+    if ctx.path == ["config", "modules"] and ctx.config:
+        for m in ctx.config.modules:
+            if m.get('name') == target:
+                ctx.path.append(target)
+                return True
+
+    # Subpaths within a module (e.g., config modules nat mappings)
+    if len(ctx.path) >= 3 and ctx.path[:2] == ["config", "modules"] and ctx.config:
+        # Allow any navigation within a module - the command handler will validate
+        ctx.path.append(target)
+        return True
+
     return False

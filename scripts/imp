@@ -4,6 +4,8 @@ imp - IMP Router Management CLI
 
 Usage:
     imp                       Enter interactive configuration REPL
+    imp apply                 Apply configuration (regenerate files, restart services)
+    imp status                Show service status
     imp config apply          Apply configuration from /persistent/config/router.json
     imp config edit           Edit configuration interactively
     imp shell routing         Open FRR/vtysh shell (routing protocols)
@@ -15,7 +17,6 @@ Usage:
     imp snapshot delete       Delete a snapshot
     imp snapshot export       Export snapshot to file (for deployment or backup)
     imp snapshot import       Import system from file
-    imp status                Show service status
 """
 
 import argparse
@@ -643,7 +644,9 @@ def cmd_snapshot_export(args) -> int:
                 error(f"Failed to create clone: {result.stderr}")
                 return 1
 
-            # Mount the clone
+            # Mount the clone (unmount first in case it auto-mounted with inherited properties)
+            run_zfs(["unmount", clean_clone], check=False)  # Ignore errors if not mounted
+            run_zfs(["set", "canmount=noauto", clean_clone], check=False)
             os.makedirs(clean_mount, exist_ok=True)
             result = run_zfs(["set", f"mountpoint={clean_mount}", clean_clone], check=False)
             if result.returncode != 0:
@@ -1019,7 +1022,8 @@ def main() -> int:
         epilog="""
 Examples:
   imp                           Enter interactive REPL
-  imp config apply              Apply saved configuration
+  imp apply                     Apply configuration (regenerate files, restart services)
+  imp status                    Show service status
   imp config edit               Interactive configuration wizard
   imp shell routing             Open FRR/vtysh for BGP/OSPF
   imp shell core                Open VPP core CLI
@@ -1031,7 +1035,6 @@ Examples:
   imp snapshot export NAME      Export system to file (for deployment)
   imp snapshot export NAME --full  Export system + data (for backup)
   imp snapshot import FILE      Import system from file
-  imp status                    Show service status
   imp agent                     Enter LLM-powered agent mode (Ollama)
 """
     )
@@ -1063,6 +1066,10 @@ Examples:
     # status subcommand
     status_parser = subparsers.add_parser("status", help="Show service status")
     status_parser.set_defaults(func=cmd_status)
+
+    # apply subcommand (shortcut for config apply)
+    apply_parser = subparsers.add_parser("apply", help="Apply configuration (shortcut for 'config apply')")
+    apply_parser.set_defaults(func=cmd_config_apply)
 
     # snapshot subcommand
     snapshot_parser = subparsers.add_parser("snapshot", help="Manage ZFS snapshots")

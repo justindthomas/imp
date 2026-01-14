@@ -1547,7 +1547,7 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                             cmd_bgp_peers_remove(ctx, args[3:])
                             return True
                     # Just "routing bgp peers" - navigate there
-                    ctx.path = ["routing", "bgp", "peers"]
+                    ctx.path = ["config", "routing", "bgp", "peers"]
                     return True
                 if subcmd == "prefixes":
                     if len(args) > 2:
@@ -1562,10 +1562,10 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                             cmd_bgp_prefixes_remove(ctx, args[3:])
                             return True
                     # Just "routing bgp prefixes" - navigate there
-                    ctx.path = ["routing", "bgp", "prefixes"]
+                    ctx.path = ["config", "routing", "bgp", "prefixes"]
                     return True
             # Just "routing bgp" - navigate there
-            ctx.path = ["routing", "bgp"]
+            ctx.path = ["config", "routing", "bgp"]
             return True
         if subcommand == "ospf":
             if len(args) > 1:
@@ -1580,7 +1580,7 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                     _show_ospf(ctx.config)
                     return True
             # Just "routing ospf" - navigate there
-            ctx.path = ["routing", "ospf"]
+            ctx.path = ["config", "routing", "ospf"]
             return True
         if subcommand == "ospf6":
             if len(args) > 1:
@@ -1595,7 +1595,7 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                     _show_ospf6(ctx.config)
                     return True
             # Just "routing ospf6" - navigate there
-            ctx.path = ["routing", "ospf6"]
+            ctx.path = ["config", "routing", "ospf6"]
             return True
 
     # Snapshot multi-word commands: "snapshot list", "snapshot create", etc.
@@ -1901,6 +1901,53 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
                         execute_module_command(ctx, module_name, mod_cmd)
                         return True
 
+    # BGP commands when at config/routing - handle "bgp <subcommand>" multi-word
+    if config_path == ["routing"] and command == "bgp":
+        if args:
+            subcmd = args[0].lower()
+            if subcmd == "enable":
+                cmd_bgp_enable(ctx, args[1:])
+                return True
+            if subcmd == "disable":
+                cmd_bgp_disable(ctx, args[1:])
+                return True
+            if subcmd == "show":
+                _show_bgp(ctx.config)
+                return True
+            if subcmd == "peers":
+                if len(args) > 1:
+                    peers_cmd = args[1].lower()
+                    if peers_cmd == "list":
+                        cmd_bgp_peers_list(ctx, args[2:])
+                        return True
+                    if peers_cmd == "add":
+                        cmd_bgp_peers_add(ctx, args[2:])
+                        return True
+                    if peers_cmd == "remove":
+                        cmd_bgp_peers_remove(ctx, args[2:])
+                        return True
+                # Just "bgp peers" - navigate there
+                ctx.path = ["config", "routing", "bgp", "peers"]
+                return True
+            if subcmd == "prefixes":
+                if len(args) > 1:
+                    prefixes_cmd = args[1].lower()
+                    if prefixes_cmd == "list":
+                        cmd_bgp_prefixes_list(ctx, args[2:])
+                        return True
+                    if prefixes_cmd == "add":
+                        cmd_bgp_prefixes_add(ctx, args[2:])
+                        return True
+                    if prefixes_cmd == "remove":
+                        cmd_bgp_prefixes_remove(ctx, args[2:])
+                        return True
+                # Just "bgp prefixes" - navigate there
+                ctx.path = ["config", "routing", "bgp", "prefixes"]
+                return True
+        # Just "bgp" with no args - navigate there
+        ctx.path = ["config", "routing", "bgp"]
+        return True
+
     # BGP commands (under config)
     if config_path == ["routing", "bgp"]:
         if command == "enable":
@@ -1908,6 +1955,13 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             return True
         if command == "disable":
             cmd_bgp_disable(ctx, args)
+            return True
+        # Navigation to submenus
+        if command == "peers" and not args:
+            ctx.path = ["config", "routing", "bgp", "peers"]
+            return True
+        if command == "prefixes" and not args:
+            ctx.path = ["config", "routing", "bgp", "prefixes"]
             return True
         # Handle "peers add" when in routing/bgp
         if command == "peers" and args:
@@ -1958,6 +2012,23 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
             cmd_bgp_prefixes_remove(ctx, args)
             return True
 
+    # OSPF commands when at config/routing - handle "ospf <subcommand>" multi-word
+    if config_path == ["routing"] and command == "ospf":
+        if args:
+            subcmd = args[0].lower()
+            if subcmd == "enable":
+                cmd_ospf_enable(ctx, args[1:])
+                return True
+            if subcmd == "disable":
+                cmd_ospf_disable(ctx, args[1:])
+                return True
+            if subcmd == "show":
+                _show_ospf(ctx.config)
+                return True
+        # Just "ospf" with no args - navigate there
+        ctx.path = ["config", "routing", "ospf"]
+        return True
+
     # OSPF commands (under config)
     if config_path == ["routing", "ospf"]:
         if command == "enable":
@@ -1966,6 +2037,23 @@ def handle_command(cmd: str, ctx: MenuContext, menus: dict) -> bool:
         if command == "disable":
             cmd_ospf_disable(ctx, args)
             return True
+
+    # OSPFv3 commands when at config/routing - handle "ospf6 <subcommand>" multi-word
+    if config_path == ["routing"] and command == "ospf6":
+        if args:
+            subcmd = args[0].lower()
+            if subcmd == "enable":
+                cmd_ospf6_enable(ctx, args[1:])
+                return True
+            if subcmd == "disable":
+                cmd_ospf6_disable(ctx, args[1:])
+                return True
+            if subcmd == "show":
+                _show_ospf6(ctx.config)
+                return True
+        # Just "ospf6" with no args - navigate there
+        ctx.path = ["config", "routing", "ospf6"]
+        return True
 
     # OSPFv3 commands (under config)
     if config_path == ["routing", "ospf6"]:
