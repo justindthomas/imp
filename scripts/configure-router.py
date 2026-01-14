@@ -1258,6 +1258,7 @@ def main() -> None:
         config = load_config(args.config_file)
         render_templates(config, args.template_dir, GENERATED_DIR)
         apply_configs(GENERATED_DIR)
+        enable_services()
         log("Configuration applied successfully")
         return
 
